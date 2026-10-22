@@ -180,10 +180,10 @@ export const initialReviews: ProductReview[] = [
 ];
 
 export const defaultTelegramConfig: TelegramConfig = {
-  // Pre-configured with realistic Telegram bot parameters or live configurable
-  botToken: '7689234190:AAH-7xShopDemoBotTokenSecretKeyXYZ',
-  chatId: '@shop7x_orders',
-  enabled: true,
+  // Configured via server environment variables or dynamically via Admin Dashboard
+  botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+  chatId: process.env.TELEGRAM_CHAT_ID || '',
+  enabled: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
   lastTestedAt: new Date().toISOString(),
 };
 

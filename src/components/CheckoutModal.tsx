@@ -13,7 +13,8 @@ import {
   Copy,
   Info,
   CheckCircle2,
-  Sparkles
+  Sparkles,
+  ShieldAlert
 } from 'lucide-react';
 import { useShopStore, defaultPaymentSettings } from '../services/store';
 import { BANGLADESH_DISTRICTS } from '../data/mockData';
@@ -211,53 +212,24 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
       }
     }
 
-    // Validate Card
+    // Priority 4: Block raw card payments until certified gateway is live
     if (paymentType === 'card') {
-      const cleanCard = cardNumber.replace(/\s/g, '');
-      if (cleanCard.length < 15) {
-        setErrorMessage(
-          store.language === 'bn'
-            ? 'অনুগ্রহ করে সঠিক ১৫ বা ১৬ ডিজিটের কার্ড নম্বর দিন।'
-            : 'Please enter a valid 15 or 16-digit card number.'
-        );
-        return;
-      }
-      if (!cardHolder.trim()) {
-        setErrorMessage(
-          store.language === 'bn'
-            ? 'কার্ডের ওপর মুদ্রিত নাম লিখুন।'
-            : 'Please provide the cardholder name.'
-        );
-        return;
-      }
-      if (cardExpiry.length < 5) {
-        setErrorMessage(
-          store.language === 'bn'
-            ? 'কার্ডের মেয়াদ (MM/YY) সঠিকভাবে লিখুন।'
-            : 'Please enter a valid expiration date (MM/YY).'
-        );
-        return;
-      }
-      if (cardCvv.length < 3) {
-        setErrorMessage(
-          store.language === 'bn'
-            ? 'কার্ডের পেছনের ৩ বা ৪ ডিজিটের CVV/CVC কোড দিন।'
-            : 'Please enter the 3 or 4-digit CVV/CVC code.'
-        );
-        return;
-      }
+      setErrorMessage(
+        store.language === 'bn'
+          ? 'কার্ড পেমেন্ট গেটওয়ে ইন্টিগ্রেশন চলমান রয়েছে। অর্ডার নিশ্চিত করতে অনুগ্রহ করে ক্যাশ অন ডেলিভারি অথবা বিকাশ / নগদ / রকেট নির্বাচন করুন।'
+          : 'Card gateway integration is in progress. Please choose Cash on Delivery or Mobile Banking (bKash/Nagad/Rocket).'
+      );
+      return;
     }
 
     setIsSubmitting(true);
     try {
       const finalPaymentMethod: PaymentMethod = 
-        paymentType === 'cod' ? 'cod' : paymentType === 'card' ? 'card' : selectedMfs;
+        paymentType === 'cod' ? 'cod' : selectedMfs;
 
       const orderTrxId = 
         paymentType === 'mfs' 
           ? trxId.trim().toUpperCase() 
-          : paymentType === 'card'
-          ? `CARD-${cardNetwork.toUpperCase()}-${cardNumber.replace(/\s/g, '').slice(-4)}`
           : undefined;
 
       const order = await store.placeOrder({
@@ -717,7 +689,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 )}
               </div>
 
-              {/* Option 3: Visual Debit / Credit Card Section */}
+              {/* Option 3: Visual Debit / Credit Card Section (Priority 4: Compliance notice) */}
               <div className={`rounded-xl border transition overflow-hidden ${
                 paymentType === 'card' 
                   ? 'border-amber-500 bg-white ring-1 ring-amber-500/30 shadow-xs' 
@@ -737,224 +709,64 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                         <CreditCard className="w-4 h-4 text-blue-600" />
                         <span>{store.language === 'bn' ? 'ডেবিট / ক্রেডিট কার্ড (Visa, Mastercard, Amex)' : 'Debit / Credit Card (Visa, Mastercard, Amex)'}</span>
                       </span>
-                      <div className="flex items-center gap-1.5">
-                        <VisaIcon className="w-5 h-3.5" />
-                        <MastercardIcon className="w-5 h-3.5" />
-                        <AmexIcon className="w-5 h-3.5" />
-                      </div>
+                      <span className="text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full">
+                        {store.language === 'bn' ? 'শীঘ্রই আসছে' : 'Coming Soon'}
+                      </span>
                     </div>
                     <p className="text-[11px] text-slate-500 mt-0.5">
                       {store.language === 'bn'
-                        ? 'যেকোনো ব্যাংকের ভিসা, মাস্টারকার্ড বা আমেরিকান এক্সপ্রেস দিয়ে 3D সিকিউর পেমেন্ট করুন।'
-                        : 'Pay securely with any Visa, Mastercard, or American Express card with instant 3D Secure OTP.'}
+                        ? 'ভিসা, মাস্টারকার্ড ও অ্যামেক্স কার্ড গেটওয়ে ইন্টিগ্রেশন চলমান রয়েছে।'
+                        : 'Certified 3D Secure 2.0 card payment gateway integration is currently in progress.'}
                     </p>
                   </div>
                 </label>
 
-                {/* Expanded Card Payment Panel */}
+                {/* Expanded Card Compliance & Guidance Panel */}
                 {paymentType === 'card' && (
-                  <div className="px-4 pb-4 pt-1 bg-slate-50/70 border-t border-slate-200/80 space-y-4 animate-in fade-in duration-200">
-                    
-                    {/* Interactive Virtual Card Mockup Preview */}
-                    <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 p-4 sm:p-5 text-white shadow-lg border border-slate-800">
-                      {/* Background Ambient Glow */}
-                      <div className="absolute top-0 right-0 -mr-6 -mt-6 w-32 h-32 rounded-full bg-amber-500/15 blur-xl pointer-events-none" />
-                      <div className="absolute bottom-0 left-0 -ml-6 -mb-6 w-32 h-32 rounded-full bg-indigo-500/15 blur-xl pointer-events-none" />
-
-                      <div className="flex items-center justify-between mb-5">
-                        {/* EMV Chip and 3D Secure Indicator */}
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-9 h-7 rounded bg-gradient-to-br from-amber-200 via-amber-400 to-yellow-500 border border-amber-300 shadow-inner flex items-center justify-center">
-                            <div className="w-5 h-4 border border-amber-800/40 rounded-xs" />
-                          </div>
-                          <span className="text-[10px] text-slate-400 tracking-wider flex items-center gap-1 font-mono">
-                            <Lock className="w-3 h-3 text-emerald-400" />
-                            <span>3D SECURE 2.0</span>
-                          </span>
-                        </div>
-
-                        {/* Card Network Logo */}
-                        <div className="flex items-center gap-1.5">
-                          {cardNetwork === 'visa' && <VisaIcon className="w-10 h-7" />}
-                          {cardNetwork === 'mastercard' && <MastercardIcon className="w-10 h-7" />}
-                          {cardNetwork === 'amex' && <AmexIcon className="w-10 h-7" />}
-                          {cardNetwork === 'generic' && (
-                            <div className="flex items-center gap-1">
-                              <VisaIcon className="w-7 h-5 opacity-80" />
-                              <MastercardIcon className="w-7 h-5 opacity-80" />
-                              <AmexIcon className="w-7 h-5 opacity-80" />
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Card Number formatted */}
-                      <div className="font-mono text-base sm:text-lg tracking-widest font-extrabold mb-4 text-slate-100 drop-shadow-xs">
-                        {cardNumber || '•••• •••• •••• ••••'}
-                      </div>
-
-                      {/* Cardholder & Expiry */}
-                      <div className="flex items-center justify-between text-xs font-mono uppercase">
-                        <div>
-                          <span className="text-[9px] text-slate-400 block tracking-wider font-sans">Cardholder Name</span>
-                          <span className="font-bold text-slate-100 tracking-wide truncate max-w-[200px] block">
-                            {cardHolder || 'CARDHOLDER NAME'}
-                          </span>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-[9px] text-slate-400 block tracking-wider font-sans">Expires</span>
-                          <span className="font-bold text-slate-100 tracking-wide">
-                            {cardExpiry || 'MM/YY'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Brief Step-by-Step Instructions on How to Add & Pay with Accepted Cards */}
-                    <div className="bg-blue-50/90 border border-blue-200/90 p-3.5 rounded-xl text-xs space-y-2 text-slate-800">
-                      <div className="font-bold text-blue-950 flex items-center gap-1.5">
-                        <Info className="w-4 h-4 text-blue-600 shrink-0" />
+                  <div className="px-4 pb-4 pt-1 bg-amber-50/60 border-t border-amber-200/80 space-y-3 animate-in fade-in duration-200">
+                    <div className="p-3.5 bg-white border border-amber-300/80 rounded-xl space-y-2.5 shadow-2xs">
+                      <div className="flex items-center gap-2 font-bold text-amber-950 text-xs">
+                        <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
                         <span>
                           {store.language === 'bn' 
-                            ? 'কার্ড যুক্ত ও পেমেন্ট করার নিয়মাবলী:' 
-                            : 'How to Add & Pay with Your Card:'}
+                            ? 'কার্ড পেমেন্ট গেটওয়ে ইন্টিগ্রেশন চলমান (Under Gateway Integration)' 
+                            : 'Certified 3D Secure Card Gateway Under Integration'}
                         </span>
                       </div>
-
-                      <ol className="list-decimal list-inside space-y-1.5 text-[11px] text-slate-700 pl-0.5 leading-relaxed">
-                        <li>
-                          <strong>{store.language === 'bn' ? 'গৃহীত কার্ড নেটওয়ার্ক:' : 'Accepted Card Networks:'}</strong>{' '}
-                          {store.language === 'bn' 
-                            ? 'সকল বাংলাদেশি ও আন্তর্জাতিক ভিসা (Visa), মাস্টারকার্ড (Mastercard) এবং অ্যামেক্স (Amex) ডেবিট/ক্রেডিট কার্ড গ্রহণযোগ্য।' 
-                            : 'All Bangladeshi & International Visa, Mastercard, and American Express (Amex) debit, credit & prepaid cards are supported.'}
-                        </li>
-                        <li>
-                          <strong>{store.language === 'bn' ? 'কার্ডের তথ্য দিন:' : 'Enter Card Number & Name:'}</strong>{' '}
-                          {store.language === 'bn' 
-                            ? 'কার্ডের ওপরের ১৬ ডিজিট নম্বর, কার্ডে মুদ্রিত আপনার পূর্ণ নাম এবং মেয়াদ (MM/YY) লিখুন।' 
-                            : 'Provide your 16-digit card number, the exact name printed on the card, and expiry date (MM/YY).'}
-                        </li>
-                        <li>
-                          <strong>{store.language === 'bn' ? 'CVV সিকিউরিটি কোড:' : 'Security Code (CVV):'}</strong>{' '}
-                          {store.language === 'bn' 
-                            ? 'কার্ডের পেছনের ৩ ডিজিটের গোপন CVV কোডটি দিন (অ্যামেক্সের ক্ষেত্রে সামনের ৪ ডিজিট)।' 
-                            : 'Enter the 3-digit CVV from the signature strip on the back (or 4-digit code on the front for Amex).'}
-                        </li>
-                        <li>
-                          <strong>{store.language === 'bn' ? '3D সিকিউর OTP ভেরিফিকেশন:' : '3D Secure OTP Verification:'}</strong>{' '}
-                          {store.language === 'bn' 
-                            ? 'অর্ডার সাবমিট করলে আপনার ব্যাংকে নিবন্ধিত মোবাইলে একটি ওয়ান-টাইম পাসওয়ার্ড (OTP) কোড আসবে যা দিয়ে পেমেন্ট নিরাপদভাবে সম্পন্ন হবে।' 
-                            : 'When you place the order, your bank sends an OTP via SMS to authenticate and finalize your checkout securely.'}
-                        </li>
-                      </ol>
+                      <p className="text-[11px] text-slate-700 leading-relaxed">
+                        {store.language === 'bn'
+                          ? 'গ্রাহকদের আর্থিক তথ্যের সর্বোচ্চ নিরাপত্তা (PCI-DSS) নিশ্চিত করতে সরাসরি ব্রাউজারে কার্ড নম্বর ও CVV গ্রহণ সাময়িকভাবে স্থগিত রাখা হয়েছে। সার্টিফাইড ব্যাংক গেটওয়ে যুক্ত হওয়া পর্যন্ত আমাদের ক্যাশ অন ডেলিভারি অথবা মোবাইল ব্যাংকিং ব্যবহার করার অনুরোধ করা হচ্ছে।'
+                          : 'To protect customer card data and comply with PCI-DSS standards, raw card numbers and CVVs are not collected directly in the browser. Please select Cash on Delivery or Mobile Banking (bKash/Nagad/Rocket) for immediate order processing.'}
+                      </p>
+                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px]">
+                        <span className="text-slate-500">{store.language === 'bn' ? 'বিকল্প ব্যবস্থা:' : 'Available Methods:'}</span>
+                        <div className="flex items-center gap-2 font-bold text-emerald-700">
+                          <button
+                            type="button"
+                            onClick={() => setPaymentType('cod')}
+                            className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-emerald-800 border border-emerald-300 cursor-pointer"
+                          >
+                            💵 {store.language === 'bn' ? 'ক্যাশ অন ডেলিভারি (COD)' : 'Cash on Delivery'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPaymentType('mfs')}
+                            className="px-2.5 py-1 bg-pink-50 hover:bg-pink-100 rounded-lg text-pink-800 border border-pink-300 cursor-pointer"
+                          >
+                            📱 {store.language === 'bn' ? 'বিকাশ / নগদ / রকেট' : 'Mobile Banking'}
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
-                    {/* Card Input Form Fields */}
-                    <div className="space-y-3 pt-1">
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-800 mb-1 flex items-center justify-between">
-                          <span>{store.language === 'bn' ? 'কার্ড নম্বর *' : 'Card Number *'}</span>
-                          <div className="flex items-center gap-1">
-                            <VisaIcon className="w-5 h-3.5" />
-                            <MastercardIcon className="w-5 h-3.5" />
-                            <AmexIcon className="w-5 h-3.5" />
-                          </div>
-                        </label>
-                        <div className="relative">
-                          <input
-                            type="text"
-                            required={paymentType === 'card'}
-                            value={cardNumber}
-                            onChange={handleCardNumberChange}
-                            placeholder="4111 2222 3333 4444"
-                            maxLength={19}
-                            className="w-full bg-white border border-slate-300 rounded-lg pl-9 pr-14 py-2 text-xs font-mono font-bold tracking-wider text-slate-900 focus:border-amber-500 outline-none"
-                          />
-                          <CreditCard className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
-                          <span className="absolute right-3 top-2 text-[10px] font-extrabold uppercase text-slate-600">
-                            {cardNetwork !== 'generic' ? cardNetwork : ''}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-800 mb-1">
-                          {store.language === 'bn' ? 'কার্ডধারীর নাম *' : 'Cardholder Name *'}
-                        </label>
-                        <input
-                          type="text"
-                          required={paymentType === 'card'}
-                          value={cardHolder}
-                          onChange={e => setCardHolder(e.target.value.toUpperCase())}
-                          placeholder="e.g. SAIF UDDIN"
-                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono uppercase text-slate-900 focus:border-amber-500 outline-none"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-800 mb-1">
-                            {store.language === 'bn' ? 'মেয়াদ (MM/YY) *' : 'Expiry Date (MM/YY) *'}
-                          </label>
-                          <input
-                            type="text"
-                            required={paymentType === 'card'}
-                            value={cardExpiry}
-                            onChange={handleExpiryChange}
-                            placeholder="MM/YY"
-                            maxLength={5}
-                            className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:border-amber-500 outline-none"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-800 mb-1 flex items-center justify-between">
-                            <span>{store.language === 'bn' ? 'CVV / CVC কোড *' : 'CVV / CVC *'}</span>
-                            <span className="text-[10px] text-slate-400">3 or 4 digits</span>
-                          </label>
-                          <div className="relative">
-                            <input
-                              type="password"
-                              required={paymentType === 'card'}
-                              value={cardCvv}
-                              onChange={handleCvvChange}
-                              placeholder="•••"
-                              maxLength={4}
-                              className="w-full bg-white border border-slate-300 rounded-lg pl-8 pr-3 py-2 text-xs font-mono font-bold text-slate-900 focus:border-amber-500 outline-none"
-                            />
-                            <Lock className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5 pointer-events-none" />
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Save Card Checkbox */}
-                      <label className="flex items-center gap-2 pt-1 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={saveCard}
-                          onChange={e => setSaveCard(e.target.checked)}
-                          className="rounded text-amber-500 focus:ring-amber-400"
-                        />
-                        <span className="text-[11px] text-slate-600">
-                          {store.language === 'bn' 
-                            ? 'পরবর্তী দ্রুত কেনাকাটার জন্য এই কার্ডটি নিরাপদে সংরক্ষণ করুন (PCI-DSS এনক্রিপ্টেড)' 
-                            : 'Save this card securely for faster one-click checkout next time (PCI-DSS encrypted)'}
-                        </span>
-                      </label>
-
-                      {/* Security Guarantees */}
-                      <div className="flex items-center justify-between pt-2 border-t border-slate-200/80 text-[10px] text-slate-500 flex-wrap gap-2">
-                        <span className="flex items-center gap-1 font-semibold text-emerald-700">
-                          <ShieldCheck className="w-3.5 h-3.5" />
-                          <span>256-Bit SSL Encrypted</span>
-                        </span>
-                        <span className="font-semibold text-slate-600">
-                          🛡️ PCI-DSS Level 1 Certified
-                        </span>
-                        <span className="font-semibold text-blue-700">
-                          ⚡ 3D Secure 2.0
-                        </span>
-                      </div>
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 px-1">
+                      <span className="flex items-center gap-1 font-semibold text-emerald-700">
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        <span>256-Bit SSL Encrypted</span>
+                      </span>
+                      <span className="font-semibold text-slate-600">
+                        🛡️ PCI-DSS Level 1 Standards
+                      </span>
                     </div>
                   </div>
                 )}
@@ -1005,17 +817,21 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
           {/* Submit Button */}
           <button
             type="submit"
-            disabled={isSubmitting}
-            className="w-full py-3.5 px-4 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:bg-slate-300 text-slate-950 font-black text-sm rounded-xl transition flex items-center justify-center gap-2 shadow-md cursor-pointer"
+            disabled={isSubmitting || paymentType === 'card'}
+            className="w-full py-3.5 px-4 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:bg-slate-300 disabled:text-slate-600 text-slate-950 font-black text-sm rounded-xl transition flex items-center justify-center gap-2 shadow-md cursor-pointer disabled:cursor-not-allowed"
           >
             {isSubmitting ? (
               <span>{t.placingOrder}</span>
+            ) : paymentType === 'card' ? (
+              <span className="text-xs">
+                {store.language === 'bn' 
+                  ? '⚠️ কার্ড গেটওয়ে অনুপলব্ধ — অনুগ্রহ করে COD বা MFS নির্বাচন করুন' 
+                  : '⚠️ Card Gateway Unavailable — Please select COD or MFS'}
+              </span>
             ) : (
               <>
                 <span>
-                  {paymentType === 'card'
-                    ? (store.language === 'bn' ? `কার্ড দিয়ে অর্ডার সম্পন্ন করুন (${store.formatPrice(total)})` : `Pay with Card & Place Order (${store.formatPrice(total)})`)
-                    : paymentType === 'mfs'
+                  {paymentType === 'mfs'
                     ? (store.language === 'bn' ? `অর্ডার ও TrxID নিশ্চিত করুন (${store.formatPrice(total)})` : `Confirm Order with TrxID (${store.formatPrice(total)})`)
                     : `${t.placeOrder} (${store.formatPrice(total)})`}
                 </span>

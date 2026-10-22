@@ -30,7 +30,6 @@ import {
   initialNotificationLogs 
 } from '../server/db';
 import { translations } from '../utils/translations';
-import { sendTelegramNotification, sendTestTelegramMessage } from '../server/telegramService';
 
 // Audio chime using Web Audio API for zero external dependency order alerts!
 export function playOrderNotificationChime() {
@@ -207,7 +206,7 @@ export class ShopStateService {
       },
     };
 
-    this.adminPassword = getStoredItem<string>(STORAGE_KEYS.ADMIN_PASSWORD, 'admin123');
+    this.adminPassword = getStoredItem<string>(STORAGE_KEYS.ADMIN_PASSWORD, '');
     this.adminPasswordChangedAt = getStoredItem<string>(STORAGE_KEYS.ADMIN_PASSWORD_CHANGED, '2026-01-01T00:00:00.000Z');
     this.adminUnlocked = typeof window !== 'undefined' ? sessionStorage.getItem('7x_shop_admin_unlocked') === 'true' : false;
     this.adminToken = typeof window !== 'undefined' ? sessionStorage.getItem('7x_shop_admin_token') : null;
@@ -378,7 +377,7 @@ export class ShopStateService {
   }
 
 
-  // Order Placement with instant Telegram Trigger
+  // Order Placement with server-side price verification and server-side Telegram dispatch
   public async placeOrder(orderData: {
     customerName: string;
     phone: string;
@@ -391,50 +390,59 @@ export class ShopStateService {
     senderNumber?: string;
     mfsProvider?: 'bkash' | 'nagad' | 'rocket';
   }): Promise<Order> {
-    const subtotal = this.getCartSubtotal();
-    const discount = this.getCartDiscount(subtotal);
-    const deliveryFee = this.getCartDeliveryFee(subtotal, orderData.district);
-    const totalAmount = Math.max(0, subtotal - discount + deliveryFee);
-
-    const orderNumberId = (1000 + this.orders.length + 1).toString();
-
-    const order: Order = {
-      id: orderNumberId,
-      orderNumber: `7X-${orderNumberId}`,
+    const payload = {
       customerName: orderData.customerName,
       phone: orderData.phone,
       email: orderData.email || `${orderData.phone}@customer.7x-shop.com`,
       address: orderData.address,
       district: orderData.district,
       notes: orderData.notes,
+      paymentMethod: orderData.paymentMethod,
+      trxId: orderData.trxId,
+      senderNumber: orderData.senderNumber,
+      couponCode: this.appliedCoupon?.code,
       items: this.cart.map(item => ({
         productId: item.product.id,
-        productName: item.product.nameEn,
-        productImage: item.product.images[0],
-        price: item.product.discountPrice || item.product.price,
         quantity: item.quantity,
         selectedColor: item.selectedColor,
         selectedSize: item.selectedSize,
       })),
-      subtotal,
-      deliveryFee,
-      discount,
-      couponCode: this.appliedCoupon?.code,
-      totalAmount,
-      paymentMethod: orderData.paymentMethod,
-      paymentStatus: orderData.paymentMethod === 'cod' ? 'pending' : (orderData.trxId ? 'completed' : 'pending'),
-      orderStatus: 'pending',
-      trxId: orderData.trxId,
-      senderNumber: orderData.senderNumber,
-      mfsProvider: orderData.mfsProvider,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      telegramNotified: false,
-      emailNotified: true,
     };
 
-    // Deduct stock
-    order.items.forEach(item => {
+    let verifiedOrder: Order;
+    try {
+      const res = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.message || 'Failed to place order');
+      }
+
+      verifiedOrder = json.data;
+
+      if (json.notification) {
+        const notifLog: NotificationLog = {
+          id: 'log-' + Date.now(),
+          orderId: verifiedOrder.id,
+          type: 'telegram',
+          status: json.notification.status === 'success' ? 'success' : 'simulated',
+          message: `Order #${verifiedOrder.id} dispatched to admin`,
+          timestamp: new Date().toISOString(),
+          details: json.notification.details || 'Dispatched by server',
+        };
+        this.notificationLogs.unshift(notifLog);
+        setStoredItem(STORAGE_KEYS.NOTIFICATION_LOGS, this.notificationLogs);
+      }
+    } catch (err: any) {
+      throw err;
+    }
+
+    // Deduct stock locally based on verified order items
+    verifiedOrder.items.forEach(item => {
       const prod = this.products.find(p => p.id === item.productId);
       if (prod && prod.stock > 0) {
         prod.stock = Math.max(0, prod.stock - item.quantity);
@@ -442,55 +450,40 @@ export class ShopStateService {
     });
     setStoredItem(STORAGE_KEYS.PRODUCTS, this.products);
 
-    // Trigger Telegram Notification
-    const log = await sendTelegramNotification(order, this.telegramConfig);
-    order.telegramNotified = log.status === 'success' || log.status === 'simulated';
-    this.notificationLogs.unshift(log);
-    setStoredItem(STORAGE_KEYS.NOTIFICATION_LOGS, this.notificationLogs);
-
     // Save order
-    this.orders.unshift(order);
+    this.orders.unshift(verifiedOrder);
     setStoredItem(STORAGE_KEYS.ORDERS, this.orders);
 
     // Audio chime for instant admin feedback
     playOrderNotificationChime();
 
-    // Auto-create or link customer
-    const existing = this.users.find(u => u.phone === order.phone || u.email === order.email);
+    // Auto-create or link customer locally
+    const existing = this.users.find(u => u.phone === verifiedOrder.phone || u.email === verifiedOrder.email);
     if (!existing) {
       const newUser: User = {
         id: `usr-${Date.now()}`,
-        name: order.customerName,
-        phone: order.phone,
-        email: order.email,
+        name: verifiedOrder.customerName,
+        phone: verifiedOrder.phone,
+        email: verifiedOrder.email,
         role: 'customer',
-        address: order.address,
-        district: order.district,
+        address: verifiedOrder.address,
+        district: verifiedOrder.district,
         createdAt: new Date().toISOString(),
       };
       this.users.push(newUser);
       setStoredItem(STORAGE_KEYS.USERS, this.users);
     }
 
-    // Also send to backend API asynchronously for consistency
-    try {
-      fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(order),
-      }).catch(() => {});
-    } catch {}
-
     // Clear cart
     this.clearCart();
 
     this.showToast(
-      '🔔 Order Received!',
-      `Order #${order.id} placed. Instant Telegram notification sent to admin!`,
+      '🔔 Order Placed!',
+      `Order #${verifiedOrder.id} confirmed. Total: ৳${verifiedOrder.totalAmount.toLocaleString()}`,
       'order'
     );
 
-    return order;
+    return verifiedOrder;
   }
 
   // Admin order status update
@@ -562,8 +555,19 @@ export class ShopStateService {
   }
 
   public async testTelegram(): Promise<{ success: boolean; message: string }> {
-    const res = await sendTestTelegramMessage(this.telegramConfig);
-    return res;
+    try {
+      const res = await fetch('/api/telegram/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-token': this.adminToken || '',
+        },
+        body: JSON.stringify(this.telegramConfig),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, message: err?.message || 'Failed to reach server' };
+    }
   }
 
   // Auth & User Switch
@@ -606,22 +610,7 @@ export class ShopStateService {
     this.notify();
   }
 
-  // Admin Security & Password Management
-  public unlockAdmin(password: string): boolean {
-    if (password === this.adminPassword) {
-      this.adminUnlocked = true;
-      this.adminToken = 'admin-master-key-session';
-      if (typeof window !== 'undefined') {
-        sessionStorage.setItem('7x_shop_admin_unlocked', 'true');
-        sessionStorage.setItem('7x_shop_admin_token', 'admin-master-key-session');
-      }
-      this.switchDemoAccount('admin');
-      this.notify();
-      return true;
-    }
-    return false;
-  }
-
+  // Admin Security & Backend Authentication
   public async unlockAdminWithBackend(password: string): Promise<boolean> {
     try {
       const res = await fetch('/api/admin/login', {
@@ -641,10 +630,13 @@ export class ShopStateService {
         this.notify();
         return true;
       }
+      if (data.message) {
+        this.showToast('Auth Notice', data.message, 'info');
+      }
     } catch {
-      // Fallback to local check
+      this.showToast('Server Notice', 'Could not connect to authentication server', 'info');
     }
-    return this.unlockAdmin(password);
+    return false;
   }
 
   public lockAdmin(): void {

@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+dotenv.config({ override: true });
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -11,6 +13,16 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
+
+// Cloud Run / Container Health Check (Readiness & Liveness probes)
+app.get(['/health', '/api/health'], (_req: Request, res: Response) => {
+  res.status(200).json({
+    status: 'healthy',
+    service: '7X_SHOP.com',
+    uptime: Math.round(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // API Routes
 app.use('/api', apiRouter);
@@ -72,14 +84,36 @@ ${allUrls
   res.send(sitemapXml);
 });
 
-// Serve static assets in production
-const distPath = path.resolve(__dirname, 'dist');
-app.use(express.static(distPath));
+async function startServer() {
+  if (process.env.NODE_ENV !== 'production') {
+    // Development mode: mount Vite dev server as middleware
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    // Production mode: serve static assets from dist
+    const distPath = path.resolve(__dirname, 'dist');
+    app.use(
+      '/assets',
+      express.static(path.join(distPath, 'assets'), {
+        maxAge: '1y',
+        immutable: true,
+      })
+    );
+    app.use(express.static(distPath));
 
-app.get('*', (_req: Request, res: Response) => {
-  res.sendFile(path.join(distPath, 'index.html'));
-});
+    // SPA wildcard fallback
+    app.get('*', (_req: Request, res: Response) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`7X_SHOP.com full-stack server running on port ${PORT}`);
-});
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`7X_SHOP.com full-stack server running on port ${PORT}`);
+  });
+}
+
+startServer();

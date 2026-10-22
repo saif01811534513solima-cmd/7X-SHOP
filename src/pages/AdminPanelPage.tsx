@@ -81,7 +81,7 @@ export const AdminPanelPage: React.FC = () => {
                     setAdminPasswordInput(e.target.value);
                     if (adminAuthError) setAdminAuthError('');
                   }}
-                  placeholder="Enter admin password (default: admin123)"
+                  placeholder="Enter administrator password"
                   className="w-full bg-slate-800/90 border border-slate-700 text-white rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 pr-11 font-mono"
                   autoFocus
                 />

@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
+import rateLimit from 'express-rate-limit';
 import { 
   INITIAL_PRODUCTS, 
   INITIAL_CATEGORIES, 
-  INITIAL_COUPONS,
+  INITIAL_COUPONS, 
   DEFAULT_SITE_SETTINGS
 } from '../data/mockData';
 import { 
@@ -27,9 +29,74 @@ let notificationLogs: NotificationLog[] = [...initialNotificationLogs];
 let siteSettings: SiteSettings = JSON.parse(JSON.stringify(DEFAULT_SITE_SETTINGS));
 let nextOrderId = 1004;
 
-// Admin Security & Tokens (Condition 10)
-let adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
-const activeAdminTokens = new Set<string>(['admin-master-key-session']);
+// ----------------------------------------------------
+// Security: Dynamic Rate Limiters
+// ----------------------------------------------------
+export const adminLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 failed attempts allowed
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Too many failed admin login attempts from this IP. Please wait 15 minutes before trying again.',
+  },
+});
+
+export const orderRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // max 20 orders per IP per 15 minutes
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: 'Order creation rate limit reached. Please wait a few minutes before placing another order.',
+  },
+});
+
+// ----------------------------------------------------
+// Security: Admin Password & Active Sessions
+// ----------------------------------------------------
+interface AdminSession {
+  token: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
+// Active session tokens with 24-hour expiration (NO HARDCODED MASTER KEY)
+const activeAdminSessions = new Map<string, AdminSession>();
+
+function cleanExpiredSessions() {
+  const now = Date.now();
+  for (const [token, session] of activeAdminSessions.entries()) {
+    if (session.expiresAt <= now) {
+      activeAdminSessions.delete(token);
+    }
+  }
+}
+
+export function isValidAdminToken(token: string | null | undefined): boolean {
+  if (!token) return false;
+  cleanExpiredSessions();
+  return activeAdminSessions.has(token);
+}
+
+// Verify configured admin password
+function getConfiguredAdminPassword(): string | null {
+  const pwd = process.env.ADMIN_PASSWORD;
+  // Disallow missing or insecure default passwords
+  if (!pwd || pwd.trim() === '' || pwd === 'admin123') {
+    return null;
+  }
+  return pwd.trim();
+}
+
+let runtimeAdminPasswordOverride: string | null = null;
+
+function getEffectiveAdminPassword(): string | null {
+  return runtimeAdminPasswordOverride || getConfiguredAdminPassword();
+}
 
 export function requireAdminAuth(req: Request, res: Response, next: () => void) {
   const token = (req.headers['x-admin-token'] as string) || 
@@ -42,7 +109,7 @@ export function requireAdminAuth(req: Request, res: Response, next: () => void) 
     });
   }
 
-  if (activeAdminTokens.has(token) || token === adminPassword) {
+  if (isValidAdminToken(token)) {
     return next();
   }
 
@@ -53,15 +120,36 @@ export function requireAdminAuth(req: Request, res: Response, next: () => void) 
 }
 
 // Admin Auth Endpoints
-router.post('/admin/login', (req: Request, res: Response) => {
+router.post('/admin/login', adminLoginLimiter, (req: Request, res: Response) => {
+  const configuredPassword = getEffectiveAdminPassword();
+  if (!configuredPassword) {
+    return res.status(503).json({
+      success: false,
+      message: 'Admin login is currently disabled: ADMIN_PASSWORD environment variable is not configured or uses an insecure default (admin123). Please set a secure ADMIN_PASSWORD in your server environment.',
+    });
+  }
+
   const { password } = req.body;
-  if (!password) {
+  if (!password || typeof password !== 'string') {
     return res.status(400).json({ success: false, message: 'Password is required' });
   }
 
-  if (password === adminPassword) {
-    const token = `adm_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-    activeAdminTokens.add(token);
+  // Constant-time comparison to prevent timing attacks
+  const isMatch = password.length === configuredPassword.length &&
+    crypto.timingSafeEqual(
+      Buffer.from(password.padEnd(64, ' ')),
+      Buffer.from(configuredPassword.padEnd(64, ' '))
+    );
+
+  if (isMatch) {
+    const token = `adm_${crypto.randomBytes(32).toString('hex')}`;
+    const now = Date.now();
+    activeAdminSessions.set(token, {
+      token,
+      createdAt: now,
+      expiresAt: now + 24 * 60 * 60 * 1000, // 24-hour expiration
+    });
+
     return res.json({
       success: true,
       message: 'Admin authentication successful',
@@ -80,7 +168,7 @@ router.post('/admin/verify', (req: Request, res: Response) => {
   const token = (req.headers['x-admin-token'] as string) || 
     (req.headers['authorization']?.startsWith('Bearer ') ? req.headers['authorization'].slice(7) : null);
 
-  if (token && (activeAdminTokens.has(token) || token === adminPassword)) {
+  if (isValidAdminToken(token)) {
     return res.json({ success: true, valid: true });
   }
   return res.status(401).json({ success: false, valid: false });
@@ -88,20 +176,40 @@ router.post('/admin/verify', (req: Request, res: Response) => {
 
 router.post('/admin/change-password', requireAdminAuth, (req: Request, res: Response) => {
   const { currentPassword, newPassword } = req.body;
-  if (currentPassword !== adminPassword) {
+  const activePassword = getEffectiveAdminPassword();
+
+  if (!activePassword || currentPassword !== activePassword) {
     return res.status(400).json({ success: false, message: 'Current password does not match' });
   }
-  if (!newPassword || newPassword.length < 4) {
-    return res.status(400).json({ success: false, message: 'New password must be at least 4 characters' });
+
+  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+    return res.status(400).json({ success: false, message: 'New password must be at least 8 characters' });
   }
-  adminPassword = newPassword;
-  res.json({ success: true, message: 'Admin password updated successfully' });
+
+  if (newPassword === 'admin123' || newPassword.toLowerCase() === 'password') {
+    return res.status(400).json({ success: false, message: 'Insecure password: default passwords like admin123 are not permitted' });
+  }
+
+  runtimeAdminPasswordOverride = newPassword;
+  // Invalidate previous sessions except the current one
+  const currentToken = (req.headers['x-admin-token'] as string) || 
+    (req.headers['authorization']?.startsWith('Bearer ') ? req.headers['authorization'].slice(7) : null);
+
+  for (const token of activeAdminSessions.keys()) {
+    if (token !== currentToken) {
+      activeAdminSessions.delete(token);
+    }
+  }
+
+  res.json({ success: true, message: 'Admin password updated successfully. All other active sessions have been invalidated.' });
 });
 
 router.post('/admin/logout', (req: Request, res: Response) => {
-  const token = req.headers['x-admin-token'] as string;
+  const token = (req.headers['x-admin-token'] as string) || 
+    (req.headers['authorization']?.startsWith('Bearer ') ? req.headers['authorization'].slice(7) : null);
+
   if (token) {
-    activeAdminTokens.delete(token);
+    activeAdminSessions.delete(token);
   }
   res.json({ success: true, message: 'Logged out successfully' });
 });
@@ -199,7 +307,7 @@ router.get('/coupons/validate/:code', (req: Request, res: Response) => {
   res.json({ success: true, data: coupon });
 });
 
-// 4. Orders API (With Telegram Notification Dispatch!)
+// 4. Orders API (With Telegram Notification Dispatch & Server-side Price Verification!)
 router.get('/orders', (req: Request, res: Response) => {
   const { customerEmail, phone, status } = req.query;
 
@@ -207,7 +315,7 @@ router.get('/orders', (req: Request, res: Response) => {
   if (!customerEmail && !phone) {
     const token = (req.headers['x-admin-token'] as string) || 
       (req.headers['authorization']?.startsWith('Bearer ') ? req.headers['authorization'].slice(7) : null);
-    if (!token || (!activeAdminTokens.has(token) && token !== adminPassword)) {
+    if (!isValidAdminToken(token)) {
       return res.status(401).json({
         success: false,
         message: 'Unauthorized: Admin authentication required to list all customer orders.',
@@ -235,58 +343,206 @@ router.get('/orders', (req: Request, res: Response) => {
   res.json({ success: true, count: filtered.length, data: filtered });
 });
 
-router.post('/orders', async (req: Request, res: Response) => {
+router.post('/orders', orderRateLimiter, async (req: Request, res: Response) => {
   try {
     const rawOrder = req.body;
-    const currentId = (nextOrderId++).toString();
-    const newOrder: Order = {
-      id: currentId,
-      orderNumber: `7X-${currentId}`,
-      customerName: rawOrder.customerName || 'Anonymous Guest',
-      phone: rawOrder.phone || '',
-      email: rawOrder.email || '',
-      address: rawOrder.address || '',
-      district: rawOrder.district || 'Dhaka',
-      notes: rawOrder.notes || '',
-      items: rawOrder.items || [],
-      subtotal: Number(rawOrder.subtotal) || 0,
-      deliveryFee: Number(rawOrder.deliveryFee) || 0,
-      discount: Number(rawOrder.discount) || 0,
-      couponCode: rawOrder.couponCode || undefined,
-      totalAmount: Number(rawOrder.totalAmount) || 0,
-      paymentMethod: rawOrder.paymentMethod || 'cod',
-      paymentStatus: rawOrder.paymentMethod === 'cod' ? 'pending' : 'completed',
-      orderStatus: 'pending',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      telegramNotified: false,
-      emailNotified: true,
-    };
+    if (!rawOrder || typeof rawOrder !== 'object') {
+      return res.status(400).json({ success: false, message: 'Invalid order request payload' });
+    }
+
+    // 1. Strict Input Validation & Sanitization
+    const customerName = String(rawOrder.customerName || '').trim();
+    const phone = String(rawOrder.phone || '').trim();
+    const email = String(rawOrder.email || '').trim();
+    const address = String(rawOrder.address || '').trim();
+    const district = String(rawOrder.district || 'Dhaka').trim();
+    const notes = String(rawOrder.notes || '').trim().slice(0, 500);
+    const paymentMethod = String(rawOrder.paymentMethod || 'cod').toLowerCase();
+    const items = rawOrder.items;
+
+    if (!customerName || customerName.length < 2 || customerName.length > 100) {
+      return res.status(400).json({ success: false, message: 'Please provide a valid customer full name (2-100 characters)' });
+    }
+
+    const cleanPhone = phone.replace(/[\s-]/g, '');
+    if (!cleanPhone || cleanPhone.length < 10 || cleanPhone.length > 15 || !/^\+?\d+$/.test(cleanPhone)) {
+      return res.status(400).json({ success: false, message: 'Please provide a valid phone number (10-15 digits)' });
+    }
+
+    if (!address || address.length < 5 || address.length > 300) {
+      return res.status(400).json({ success: false, message: 'Please provide a full delivery address (minimum 5 characters)' });
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, message: 'Your order must contain at least one item' });
+    }
+
+    // Priority 4: Block raw credit card submissions until certified gateway is live
+    if (paymentMethod === 'card') {
+      return res.status(400).json({
+        success: false,
+        message: 'Credit / Debit card processing is currently unavailable. Please select Cash on Delivery or Mobile Banking (bKash / Nagad / Rocket).',
+      });
+    }
+
+    const allowedPaymentMethods = ['cod', 'bkash', 'nagad', 'rocket'];
+    if (!allowedPaymentMethods.includes(paymentMethod)) {
+      return res.status(400).json({ success: false, message: `Unsupported payment method: ${paymentMethod}` });
+    }
+
+    // Validate Mobile Banking details
+    let validatedTrxId: string | undefined = undefined;
+    let validatedSenderNumber: string | undefined = undefined;
+    if (['bkash', 'nagad', 'rocket'].includes(paymentMethod)) {
+      const rawTrx = String(rawOrder.trxId || '').trim();
+      const rawSender = String(rawOrder.senderNumber || '').trim().replace(/[\s-]/g, '');
+      if (!rawTrx || rawTrx.length < 3 || rawTrx.length > 40) {
+        return res.status(400).json({ success: false, message: 'Valid Transaction ID (TrxID) is required for mobile banking payments' });
+      }
+      if (!rawSender || rawSender.length < 10) {
+        return res.status(400).json({ success: false, message: 'Sender mobile number is required for mobile banking verification' });
+      }
+      validatedTrxId = rawTrx.toUpperCase();
+      validatedSenderNumber = rawSender;
+    }
+
+    // 2. Server-side Product Lookup, Stock Verification & Price Recalculation (Priority 3)
+    let verifiedSubtotal = 0;
+    const verifiedItems: Order['items'] = [];
+
+    for (const item of items) {
+      const productId = String(item.productId || '');
+      const quantity = Math.floor(Number(item.quantity));
+
+      if (!productId || isNaN(quantity) || quantity < 1 || quantity > 50) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid product quantity (${quantity}) for product ID: ${productId}`,
+        });
+      }
+
+      const prod = products.find(p => p.id === productId);
+      if (!prod) {
+        return res.status(400).json({
+          success: false,
+          message: `Product '${productId}' not found in active inventory`,
+        });
+      }
+
+      if (prod.stock < quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock for '${prod.nameEn}'. In stock: ${prod.stock}, Requested: ${quantity}`,
+        });
+      }
+
+      // CRITICAL: Always use official server catalog price (ignore any price sent by client)
+      const officialPrice = (typeof prod.discountPrice === 'number' && prod.discountPrice > 0)
+        ? prod.discountPrice
+        : prod.price;
+
+      verifiedSubtotal += officialPrice * quantity;
+
+      verifiedItems.push({
+        productId: prod.id,
+        productName: prod.nameEn,
+        productImage: prod.images?.[0] || '',
+        price: officialPrice,
+        quantity,
+        selectedColor: item.selectedColor ? String(item.selectedColor) : undefined,
+        selectedSize: item.selectedSize ? String(item.selectedSize) : undefined,
+      });
+    }
+
+    // 3. Server-side Coupon & Discount Calculation
+    let verifiedDiscount = 0;
+    let validatedCouponCode: string | undefined = undefined;
+
+    if (rawOrder.couponCode && typeof rawOrder.couponCode === 'string') {
+      const cleanCoupon = rawOrder.couponCode.toUpperCase().trim();
+      const coupon = INITIAL_COUPONS.find(c => c.code === cleanCoupon);
+      if (coupon) {
+        const meetsMinSpend = !coupon.minSpend || verifiedSubtotal >= coupon.minSpend;
+        if (meetsMinSpend) {
+          validatedCouponCode = coupon.code;
+          if (coupon.discountType === 'percentage') {
+            verifiedDiscount = Math.round((verifiedSubtotal * coupon.discountValue) / 100);
+          } else if (coupon.discountType === 'fixed') {
+            verifiedDiscount = Math.min(verifiedSubtotal, coupon.discountValue);
+          }
+        }
+      }
+    }
+
+    // 4. Server-side Delivery Fee Calculation
+    let verifiedDeliveryFee = 0;
+    const isFreeShippingCoupon = validatedCouponCode && 
+      INITIAL_COUPONS.find(c => c.code === validatedCouponCode)?.discountType === 'free_shipping';
+    const freeDeliveryThreshold = siteSettings.freeDeliveryThreshold ?? 2000;
+
+    if (isFreeShippingCoupon || verifiedSubtotal >= freeDeliveryThreshold) {
+      verifiedDeliveryFee = 0;
+    } else if (district.toLowerCase() !== 'dhaka') {
+      verifiedDeliveryFee = siteSettings.outsideDhakaDeliveryFee ?? 120;
+    } else {
+      verifiedDeliveryFee = siteSettings.insideDhakaDeliveryFee ?? 60;
+    }
+
+    // 5. Server-side Final Total Amount
+    const verifiedTotalAmount = Math.max(0, verifiedSubtotal - verifiedDiscount + verifiedDeliveryFee);
 
     // Decrement stock for ordered items
-    newOrder.items.forEach(item => {
+    verifiedItems.forEach(item => {
       const prod = products.find(p => p.id === item.productId);
       if (prod && prod.stock > 0) {
         prod.stock = Math.max(0, prod.stock - item.quantity);
       }
     });
 
-    // Send Telegram Notification!
+    const currentId = (nextOrderId++).toString();
+    const newOrder: Order = {
+      id: currentId,
+      orderNumber: `7X-${currentId}`,
+      customerName,
+      phone: cleanPhone,
+      email: email || `${cleanPhone}@customer.7x-shop.com`,
+      address,
+      district,
+      notes,
+      items: verifiedItems,
+      subtotal: verifiedSubtotal,
+      deliveryFee: verifiedDeliveryFee,
+      discount: verifiedDiscount,
+      couponCode: validatedCouponCode,
+      totalAmount: verifiedTotalAmount,
+      paymentMethod: paymentMethod as any,
+      paymentStatus: paymentMethod === 'cod' ? 'pending' : (validatedTrxId ? 'pending' : 'pending'),
+      orderStatus: 'pending',
+      trxId: validatedTrxId,
+      senderNumber: validatedSenderNumber,
+      mfsProvider: ['bkash', 'nagad', 'rocket'].includes(paymentMethod) ? (paymentMethod as any) : undefined,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      telegramNotified: false,
+      emailNotified: true,
+    };
+
+    // Dispatch Telegram notification directly from server
     const log = await sendTelegramNotification(newOrder, telegramConfig);
     newOrder.telegramNotified = log.status === 'success' || log.status === 'simulated';
     notificationLogs.unshift(log);
 
-    // Save order in memory
+    // Save order in server storage
     orders.unshift(newOrder);
 
-    // Check if new customer needs to be created
+    // Link customer
     const existingUser = users.find(u => u.phone === newOrder.phone || (newOrder.email && u.email === newOrder.email));
-    if (!existingUser && (newOrder.phone || newOrder.email)) {
+    if (!existingUser) {
       users.push({
         id: `usr-${Date.now()}`,
         name: newOrder.customerName,
         phone: newOrder.phone,
-        email: newOrder.email || `${newOrder.phone}@customer.7x-shop.com`,
+        email: newOrder.email,
         role: 'customer',
         address: newOrder.address,
         district: newOrder.district,
@@ -294,14 +550,17 @@ router.post('/orders', async (req: Request, res: Response) => {
       });
     }
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: 'Order created successfully and instant notification dispatched',
+      message: 'Order created successfully with verified prices',
       data: newOrder,
-      notification: log,
+      notification: {
+        status: log.status,
+        details: log.details,
+      },
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, message: error?.message || 'Failed to place order' });
+    return res.status(500).json({ success: false, message: error?.message || 'Failed to process order' });
   }
 });
 
@@ -349,20 +608,34 @@ router.get('/customers', requireAdminAuth, (req: Request, res: Response) => {
 
 // 7. Telegram Configuration & Notification Logs (Protected)
 router.get('/telegram/config', requireAdminAuth, (_req: Request, res: Response) => {
-  res.json({ success: true, data: telegramConfig });
+  // Mask the bot token to prevent exposing sensitive credentials to the browser
+  const maskedToken = telegramConfig.botToken
+    ? `${telegramConfig.botToken.slice(0, 6)}...${telegramConfig.botToken.slice(-4)}`
+    : '';
+
+  res.json({
+    success: true,
+    data: {
+      ...telegramConfig,
+      botToken: maskedToken,
+    },
+  });
 });
 
 router.post('/telegram/config', requireAdminAuth, (req: Request, res: Response) => {
   const { botToken, chatId, enabled } = req.body;
-  if (botToken !== undefined) telegramConfig.botToken = botToken;
+  // If the token is masked, keep the existing real token
+  if (botToken !== undefined && typeof botToken === 'string' && !botToken.includes('...')) {
+    telegramConfig.botToken = botToken;
+  }
   if (chatId !== undefined) telegramConfig.chatId = chatId;
   if (enabled !== undefined) telegramConfig.enabled = Boolean(enabled);
-  res.json({ success: true, message: 'Telegram config updated', data: telegramConfig });
+  res.json({ success: true, message: 'Telegram config updated successfully' });
 });
 
 router.post('/telegram/test', requireAdminAuth, async (req: Request, res: Response) => {
   const config = {
-    botToken: req.body.botToken || telegramConfig.botToken,
+    botToken: req.body.botToken && !req.body.botToken.includes('...') ? req.body.botToken : telegramConfig.botToken,
     chatId: req.body.chatId || telegramConfig.chatId,
     enabled: true,
   };
