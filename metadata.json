@@ -1,0 +1,8 @@
+{
+  "name": "7X_SHOP.com - Modern E-Commerce Marketplace",
+  "description": "Premium full-featured e-commerce marketplace featuring English & Bangla support, Cash on Delivery, instant Telegram order notifications, customer portal, and comprehensive admin dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
