@@ -78,11 +78,13 @@ export const HeroSlider: React.FC<HeroSliderProps> = ({ onExploreDeals, onShopAl
       <div className="relative rounded-2xl overflow-hidden bg-slate-950 text-white shadow-xl min-h-[380px] md:min-h-[440px] flex items-center">
         {/* Background Image with Gradient Overlay */}
         <div className="absolute inset-0">
-          <img
-            src={slides[safeCurrentSlide]?.image}
-            alt="Hero Banner"
-            className="w-full h-full object-cover object-center opacity-35 transition-all duration-700 scale-105"
-          />
+          {slides[safeCurrentSlide]?.image ? (
+            <img
+              src={slides[safeCurrentSlide].image}
+              alt="Hero Banner"
+              className="w-full h-full object-cover object-center opacity-35 transition-all duration-700 scale-105"
+            />
+          ) : null}
           <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/80 to-transparent" />
         </div>
 

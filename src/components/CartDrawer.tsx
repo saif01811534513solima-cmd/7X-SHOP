@@ -129,11 +129,17 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                 const unitPrice = item.product.discountPrice || item.product.price;
                 return (
                   <div key={`${item.product.id}-${index}`} className="py-4 first:pt-0 last:pb-0 flex gap-3.5">
-                    <img
-                      src={item.product.images[0]}
-                      alt={item.product.nameEn}
-                      className="w-18 h-18 object-cover rounded-lg border border-slate-200 shrink-0 bg-slate-50"
-                    />
+                    {item.product.images && item.product.images[0] ? (
+                      <img
+                        src={item.product.images[0]}
+                        alt={item.product.nameEn}
+                        className="w-18 h-18 object-cover rounded-lg border border-slate-200 shrink-0 bg-slate-50"
+                      />
+                    ) : (
+                      <div className="w-18 h-18 rounded-lg border border-slate-200 shrink-0 bg-slate-100 flex items-center justify-center text-[10px] text-slate-500 font-bold">
+                        7X
+                      </div>
+                    )}
                     <div className="flex-1 min-w-0 flex flex-col justify-between">
                       <div>
                         <h4 className="text-xs font-semibold text-slate-900 truncate">

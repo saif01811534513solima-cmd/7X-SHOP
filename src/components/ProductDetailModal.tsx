@@ -39,8 +39,12 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   const store = useShopStore();
   const t = store.t();
 
+  const fallbackModalImg = (product?.images && product.images.length > 0 && product.images[0])
+    ? product.images[0]
+    : 'https://images.unsplash.com/photo-1546868871-7041f2a55e12?auto=format&fit=crop&q=80&w=800';
+
   // All React Hooks MUST be called unconditionally at the top
-  const [activeImage, setActiveImage] = useState<string>('');
+  const [activeImage, setActiveImage] = useState<string>(fallbackModalImg);
   const [activeImageIndex, setActiveImageIndex] = useState<number>(0);
   const [selectedVariant, setSelectedVariant] = useState<string>('');
   const [quantity, setQuantity] = useState<number>(1);
@@ -59,7 +63,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   // Sync state whenever product changes or modal is opened
   useEffect(() => {
     if (product) {
-      const defaultImg = product.images && product.images.length > 0 
+      const defaultImg = (product.images && product.images.length > 0 && product.images[0])
         ? product.images[0] 
         : 'https://images.unsplash.com/photo-1546868871-7041f2a55e12?auto=format&fit=crop&q=80&w=800';
       setActiveImage(defaultImg);
@@ -217,11 +221,17 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
           <div className="bg-slate-50/60 p-4 sm:p-6 flex flex-col items-center">
             {/* Main Active Photo Container */}
             <div className="relative w-full max-w-md aspect-square sm:aspect-4/3 rounded-2xl overflow-hidden bg-white border border-slate-200/90 shadow-xs flex items-center justify-center group">
-              <img
-                src={activeImage}
-                alt={displayName}
-                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-              />
+              {activeImage ? (
+                <img
+                  src={activeImage}
+                  alt={displayName}
+                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                />
+              ) : (
+                <div className="w-full h-full bg-slate-100 flex items-center justify-center text-slate-400 font-bold">
+                  {displayName}
+                </div>
+              )}
 
               {/* Navigation arrows for images */}
               {productImages.length > 1 && (
@@ -274,11 +284,17 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                           : 'border-slate-200/90 hover:border-slate-400 opacity-80 hover:opacity-100'
                       }`}
                     >
-                      <img
-                        src={img}
-                        alt={`Preview thumbnail ${idx + 1}`}
-                        className="w-full h-full object-cover"
-                      />
+                      {img ? (
+                        <img
+                          src={img}
+                          alt={`Preview thumbnail ${idx + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full bg-slate-100 flex items-center justify-center text-[10px] text-slate-400 font-bold">
+                          {idx + 1}
+                        </div>
+                      )}
                     </button>
                   );
                 })}

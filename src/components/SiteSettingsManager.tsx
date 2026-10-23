@@ -395,11 +395,17 @@ export const SiteSettingsManager: React.FC = () => {
               >
                 {/* Banner Image Preview */}
                 <div className="aspect-[16/9] relative bg-slate-950 overflow-hidden group">
-                  <img
-                    src={slide.image}
-                    alt={slide.titleEn}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                  />
+                  {slide.image ? (
+                    <img
+                      src={slide.image}
+                      alt={slide.titleEn}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-slate-600 text-xs font-mono">
+                      No Image Selected
+                    </div>
+                  )}
                   <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent" />
 
                   {/* Badges on preview */}
@@ -973,11 +979,17 @@ export const SiteSettingsManager: React.FC = () => {
                 
                 {/* Active chosen image preview */}
                 <div className="aspect-[16/8] relative bg-slate-950 border border-slate-700 rounded-xl overflow-hidden shadow-inner">
-                  <img
-                    src={slideForm.image}
-                    alt="Slide Preview"
-                    className="w-full h-full object-cover"
-                  />
+                  {slideForm.image ? (
+                    <img
+                      src={slideForm.image}
+                      alt="Slide Preview"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-slate-500 text-xs">
+                      ব্যানার ছবি নির্বাচন করুন
+                    </div>
+                  )}
                   <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-transparent flex items-end p-3">
                     <span className="text-[10px] text-amber-300 font-mono">
                       Current Banner Preview
@@ -1028,7 +1040,9 @@ export const SiteSettingsManager: React.FC = () => {
                             slideForm.image === preset.url ? 'border-amber-400 ring-2 ring-amber-400/40 scale-102' : 'border-slate-800 hover:border-slate-600'
                           }`}
                         >
-                          <img src={preset.url} alt={preset.title} className="w-full h-full object-cover group-hover:scale-105 transition" />
+                          {preset.url ? (
+                            <img src={preset.url} alt={preset.title} className="w-full h-full object-cover group-hover:scale-105 transition" />
+                          ) : null}
                           <div className="absolute inset-0 bg-slate-950/40 p-1 flex items-end">
                             <span className="text-[9px] text-white font-bold line-clamp-1">{preset.category}</span>
                           </div>

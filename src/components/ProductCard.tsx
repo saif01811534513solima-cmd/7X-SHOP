@@ -27,12 +27,18 @@ export const ProductCard: React.FC<ProductCardProps> = ({
     <div className="group relative bg-white border border-slate-200/90 rounded-xl overflow-hidden hover:border-slate-300 hover:shadow-md transition-all flex flex-col justify-between">
       {/* Top Media Container */}
       <div className="relative aspect-square w-full bg-slate-100 overflow-hidden cursor-pointer" onClick={() => onSelect(product)}>
-        <img
-          src={product.images[0]}
-          alt={product.nameEn}
-          loading="lazy"
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-        />
+        {product.images && product.images[0] ? (
+          <img
+            src={product.images[0]}
+            alt={product.nameEn}
+            loading="lazy"
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-slate-100 text-slate-400 font-bold text-sm">
+            7X SHOP
+          </div>
+        )}
 
         {/* Quiet Discount Tag (sharp square or subtle ribbon, no rounded pill candy) */}
         {discountPercent > 0 && (

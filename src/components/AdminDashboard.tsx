@@ -943,11 +943,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
                     {filteredProducts.map(prod => (
                       <tr key={prod.id} className="hover:bg-slate-750 transition-colors">
                         <td className="p-3.5 flex items-center gap-3">
-                          <img
-                            src={prod.images[0]}
-                            alt=""
-                            className="w-10 h-10 object-cover rounded bg-slate-900 border border-slate-700 shrink-0"
-                          />
+                          {prod.images && prod.images[0] ? (
+                            <img
+                              src={prod.images[0]}
+                              alt=""
+                              className="w-10 h-10 object-cover rounded bg-slate-900 border border-slate-700 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-10 h-10 rounded bg-slate-900 border border-slate-700 shrink-0 flex items-center justify-center text-xs text-slate-500 font-bold">
+                              7X
+                            </div>
+                          )}
                           <div>
                             <div className="font-bold text-white">{prod.nameEn}</div>
                             <div className="text-slate-400 text-[11px]">{prod.nameBn}</div>
@@ -2225,7 +2231,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
                           key={idx}
                           className="relative aspect-square rounded-xl overflow-hidden bg-slate-900 border border-slate-700 group shadow-xs"
                         >
-                          <img src={img} alt={`Product ${idx + 1}`} className="w-full h-full object-cover" />
+                          {img ? (
+                            <img src={img} alt={`Product ${idx + 1}`} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full bg-slate-900 flex items-center justify-center text-xs text-slate-500 font-bold">
+                              7X
+                            </div>
+                          )}
                           
                           {/* Main Cover Badge */}
                           {idx === 0 ? (
@@ -2434,7 +2446,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
                           className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden group flex flex-col justify-between"
                         >
                           <div className="aspect-square relative bg-slate-900 overflow-hidden">
-                            <img src={preset.url} alt={preset.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                            {preset.url ? (
+                              <img src={preset.url} alt={preset.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform" />
+                            ) : null}
                             {isAdded && (
                               <div className="absolute inset-0 bg-emerald-950/70 flex items-center justify-center text-emerald-400 font-bold text-xs gap-1">
                                 <Check className="w-4 h-4" />
@@ -2480,11 +2494,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
                   />
                 </div>
 
-                {customImageUrl && (
+                {customImageUrl && customImageUrl.trim() ? (
                   <div className="w-24 h-24 rounded-xl overflow-hidden border border-slate-700 bg-slate-950">
-                    <img src={customImageUrl} alt="Preview" className="w-full h-full object-cover" />
+                    <img src={customImageUrl.trim()} alt="Preview" className="w-full h-full object-cover" />
                   </div>
-                )}
+                ) : null}
 
                 <button
                   type="submit"

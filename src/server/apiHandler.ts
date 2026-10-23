@@ -443,10 +443,14 @@ router.post('/orders', orderRateLimiter, async (req: Request, res: Response) => 
 
       verifiedSubtotal += officialPrice * quantity;
 
+      const orderItemImage = (prod.images && prod.images.length > 0 && prod.images[0]?.trim())
+        ? prod.images[0].trim()
+        : 'https://images.unsplash.com/photo-1546868871-7041f2a55e12?auto=format&fit=crop&q=80&w=800';
+
       verifiedItems.push({
         productId: prod.id,
         productName: prod.nameEn,
-        productImage: prod.images?.[0] || '',
+        productImage: orderItemImage,
         price: officialPrice,
         quantity,
         selectedColor: item.selectedColor ? String(item.selectedColor) : undefined,

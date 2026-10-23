@@ -134,8 +134,12 @@ export const UserPanelPage: React.FC = () => {
                     }}
                     className="group bg-white p-3.5 rounded-2xl border border-slate-200/80 hover:border-amber-400 hover:shadow-md transition text-center flex flex-col items-center gap-2 cursor-pointer"
                   >
-                    <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full overflow-hidden bg-slate-100 group-hover:scale-105 transition-transform border border-slate-100">
-                      <img src={cat.image} alt={cat.nameEn} className="w-full h-full object-cover" />
+                    <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full overflow-hidden bg-slate-100 group-hover:scale-105 transition-transform border border-slate-100 flex items-center justify-center">
+                      {cat.image ? (
+                        <img src={cat.image} alt={cat.nameEn} className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-xs font-bold text-slate-500">7X</span>
+                      )}
                     </div>
                     <span className="text-xs font-bold text-slate-800 group-hover:text-amber-600 transition-colors line-clamp-1">
                       {store.language === 'bn' ? cat.nameBn : cat.nameEn}

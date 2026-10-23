@@ -30,11 +30,15 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({ onSelectCategory
             className="group relative bg-white border border-slate-200/90 rounded-2xl overflow-hidden hover:border-slate-300 hover:shadow-lg transition-all cursor-pointer flex flex-col justify-between"
           >
             <div className="relative aspect-16/10 w-full overflow-hidden bg-slate-100">
-              <img
-                src={category.image}
-                alt={category.nameEn}
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-              />
+              {category.image ? (
+                <img
+                  src={category.image}
+                  alt={category.nameEn}
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                />
+              ) : (
+                <div className="w-full h-full bg-slate-900" />
+              )}
               <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/20 to-transparent" />
               <div className="absolute bottom-4 left-4 right-4 text-white">
                 <span className="text-[11px] font-semibold text-amber-400 uppercase tracking-widest block mb-1">

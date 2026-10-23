@@ -147,7 +147,11 @@ export const OrderSuccessModal: React.FC<OrderSuccessModalProps> = ({
               {order.items.map((it, idx) => (
                 <div key={idx} className="flex items-center justify-between gap-3 text-slate-700 bg-slate-50 p-2 rounded">
                   <div className="flex items-center gap-2 truncate">
-                    <img src={it.productImage} alt="" className="w-8 h-8 rounded object-cover" />
+                    {it.productImage ? (
+                      <img src={it.productImage} alt="" className="w-8 h-8 rounded object-cover" />
+                    ) : (
+                      <div className="w-8 h-8 rounded bg-slate-200 shrink-0" />
+                    )}
                     <span className="truncate">{it.productName} (x{it.quantity})</span>
                   </div>
                   <span className="font-bold shrink-0">{store.formatPrice(it.price * it.quantity)}</span>

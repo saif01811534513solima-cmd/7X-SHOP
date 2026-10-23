@@ -239,11 +239,17 @@ export const Header: React.FC<HeaderProps> = ({
                     onClick={() => handleSelectSearchResult(prod)}
                     className="flex items-center gap-3 p-2.5 hover:bg-amber-50/60 cursor-pointer transition-colors"
                   >
-                    <img
-                      src={prod.images[0]}
-                      alt={prod.nameEn}
-                      className="w-10 h-10 object-cover rounded border border-slate-200 shrink-0"
-                    />
+                    {prod.images && prod.images[0] ? (
+                      <img
+                        src={prod.images[0]}
+                        alt={prod.nameEn}
+                        className="w-10 h-10 object-cover rounded border border-slate-200 shrink-0"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded border border-slate-200 shrink-0 bg-slate-100 flex items-center justify-center text-[10px] text-slate-500 font-bold">
+                        7X
+                      </div>
+                    )}
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-semibold text-slate-900 truncate">
                         {store.language === 'bn' ? prod.nameBn : prod.nameEn}
