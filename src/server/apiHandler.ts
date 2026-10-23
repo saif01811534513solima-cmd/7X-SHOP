@@ -2,32 +2,50 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import { 
-  INITIAL_PRODUCTS, 
-  INITIAL_CATEGORIES, 
-  INITIAL_COUPONS, 
-  DEFAULT_SITE_SETTINGS
-} from '../data/mockData';
+  seedDatabaseIfEmpty,
+  getProducts,
+  getProductByIdOrSlug,
+  saveProduct,
+  deleteProduct,
+  getCategories,
+  getCoupon,
+  createOrderInTransaction,
+  getOrders,
+  getOrderByNumberAndPhone,
+  updateOrderStatus,
+  updateOrderNotificationStatus,
+  getCustomers,
+  getAdminStats,
+  getSiteSettings,
+  updateSiteSettings,
+  resetSiteSettings,
+  getTelegramConfig,
+  updateTelegramConfig,
+  getNotificationLogs,
+  addNotificationLog,
+  getReviewsByProduct,
+  addReview,
+} from './database';
 import { 
-  initialOrders, 
-  initialUsers, 
-  initialReviews, 
-  defaultTelegramConfig, 
-  initialNotificationLogs 
-} from './db';
+  AdminLoginSchema, 
+  AdminChangePasswordSchema, 
+  ProductSchema, 
+  ProductUpdateSchema,
+  OrderCreateSchema, 
+  OrderStatusSchema,
+  TelegramConfigSchema, 
+  ProductReviewSchema, 
+  SiteSettingsSchema 
+} from './validation';
 import { sendTelegramNotification, sendTestTelegramMessage } from './telegramService';
-import { Product, Order, User, TelegramConfig, NotificationLog, ProductReview, SiteSettings } from '../types';
+import { Product, OrderStatus, SiteSettings } from '../types';
 
 export const router = Router();
 
-// In-memory data store for server
-let products: Product[] = [...INITIAL_PRODUCTS];
-let orders: Order[] = [...initialOrders];
-let users: User[] = [...initialUsers];
-let reviews: ProductReview[] = [...initialReviews];
-let telegramConfig: TelegramConfig = { ...defaultTelegramConfig };
-let notificationLogs: NotificationLog[] = [...initialNotificationLogs];
-let siteSettings: SiteSettings = JSON.parse(JSON.stringify(DEFAULT_SITE_SETTINGS));
-let nextOrderId = 1004;
+// Automatically seed collections if empty on initialization
+seedDatabaseIfEmpty().catch(err => {
+  console.error('[API] Error during database startup seed:', err);
+});
 
 // ----------------------------------------------------
 // Security: Dynamic Rate Limiters
@@ -64,7 +82,6 @@ interface AdminSession {
   expiresAt: number;
 }
 
-// Active session tokens with 24-hour expiration (NO HARDCODED MASTER KEY)
 const activeAdminSessions = new Map<string, AdminSession>();
 
 function cleanExpiredSessions() {
@@ -82,10 +99,8 @@ export function isValidAdminToken(token: string | null | undefined): boolean {
   return activeAdminSessions.has(token);
 }
 
-// Verify configured admin password
 function getConfiguredAdminPassword(): string | null {
   const pwd = process.env.ADMIN_PASSWORD;
-  // Disallow missing or insecure default passwords
   if (!pwd || pwd.trim() === '' || pwd === 'admin123') {
     return null;
   }
@@ -112,8 +127,19 @@ export function requireAdminAuth(req: Request, res: Response, next: () => void) 
   return next();
 }
 
+// ----------------------------------------------------
 // Admin Auth Endpoints
+// ----------------------------------------------------
 router.post('/admin/login', adminLoginLimiter, (req: Request, res: Response) => {
+  const parseResult = AdminLoginSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Validation failed', 
+      errors: parseResult.error.format() 
+    });
+  }
+
   const configuredPassword = getEffectiveAdminPassword();
   if (!configuredPassword) {
     return res.status(503).json({
@@ -122,10 +148,7 @@ router.post('/admin/login', adminLoginLimiter, (req: Request, res: Response) => 
     });
   }
 
-  const { password } = req.body;
-  if (!password || typeof password !== 'string') {
-    return res.status(400).json({ success: false, message: 'Password is required' });
-  }
+  const { password } = parseResult.data;
 
   // Constant-time comparison to prevent timing attacks
   const isMatch = password.length === configuredPassword.length &&
@@ -147,7 +170,14 @@ router.post('/admin/login', adminLoginLimiter, (req: Request, res: Response) => 
       success: true,
       message: 'Admin authentication successful',
       token,
-      user: users.find(u => u.role === 'admin') || initialUsers[0],
+      user: {
+        id: 'usr-admin-1',
+        name: 'Shop Administrator',
+        email: 'admin@7x-shop.com',
+        phone: '01811534513',
+        role: 'admin',
+        createdAt: new Date().toISOString(),
+      },
     });
   }
 
@@ -168,22 +198,24 @@ router.post('/admin/verify', (req: Request, res: Response) => {
 });
 
 router.post('/admin/change-password', requireAdminAuth, (req: Request, res: Response) => {
-  const { currentPassword, newPassword } = req.body;
+  const parseResult = AdminChangePasswordSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({ 
+      success: false, 
+      message: parseResult.error.issues[0]?.message || 'Validation failed', 
+      errors: parseResult.error.format() 
+    });
+  }
+
+  const { currentPassword, newPassword } = parseResult.data;
   const activePassword = getEffectiveAdminPassword();
 
   if (!activePassword || currentPassword !== activePassword) {
     return res.status(400).json({ success: false, message: 'Current password does not match' });
   }
 
-  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 12) {
-    return res.status(400).json({ success: false, message: 'New password must be at least 12 characters' });
-  }
-
-  if (newPassword === 'admin123' || newPassword.toLowerCase() === 'password') {
-    return res.status(400).json({ success: false, message: 'Insecure password: default passwords like admin123 are not permitted' });
-  }
-
   runtimeAdminPasswordOverride = newPassword;
+
   // Invalidate previous sessions except the current one
   const currentToken = (req.headers['x-admin-token'] as string) || 
     (req.headers['authorization']?.startsWith('Bearer ') ? req.headers['authorization'].slice(7) : null);
@@ -194,7 +226,10 @@ router.post('/admin/change-password', requireAdminAuth, (req: Request, res: Resp
     }
   }
 
-  res.json({ success: true, message: 'Admin password updated successfully. All other active sessions have been invalidated.' });
+  res.json({ 
+    success: true, 
+    message: 'Admin password updated successfully. All other active sessions have been invalidated.' 
+  });
 });
 
 router.post('/admin/logout', (req: Request, res: Response) => {
@@ -207,127 +242,185 @@ router.post('/admin/logout', (req: Request, res: Response) => {
   res.json({ success: true, message: 'Logged out successfully' });
 });
 
+// ----------------------------------------------------
 // 1. Products API
-router.get('/products', (req: Request, res: Response) => {
-  const { category, search, sort, hot, featured } = req.query;
-  let result = [...products];
+// ----------------------------------------------------
+router.get('/products', async (req: Request, res: Response) => {
+  try {
+    const { category, search, sort, hot, featured } = req.query;
+    const result = await getProducts({
+      category: typeof category === 'string' ? category : undefined,
+      search: typeof search === 'string' ? search : undefined,
+      sort: typeof sort === 'string' ? sort : undefined,
+      hot: hot === 'true',
+      featured: featured === 'true',
+    });
 
-  if (category && category !== 'all') {
-    result = result.filter(p => p.category === category);
+    res.json({ success: true, count: result.length, data: result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to fetch products' });
   }
-
-  if (search && typeof search === 'string') {
-    const q = search.toLowerCase().trim();
-    result = result.filter(p => 
-      p.nameEn.toLowerCase().includes(q) || 
-      p.nameBn.includes(q) ||
-      p.brand.toLowerCase().includes(q) ||
-      p.descriptionEn.toLowerCase().includes(q)
-    );
-  }
-
-  if (hot === 'true') {
-    result = result.filter(p => p.isHot);
-  }
-
-  if (featured === 'true') {
-    result = result.filter(p => p.isFeatured);
-  }
-
-  if (sort === 'price_asc') {
-    result.sort((a, b) => (a.discountPrice || a.price) - (b.discountPrice || b.price));
-  } else if (sort === 'price_desc') {
-    result.sort((a, b) => (b.discountPrice || b.price) - (a.discountPrice || a.price));
-  } else if (sort === 'rating') {
-    result.sort((a, b) => b.rating - a.rating);
-  } else if (sort === 'newest') {
-    result.sort((a, b) => (b.isNew ? 1 : 0) - (a.isNew ? 1 : 0));
-  }
-
-  res.json({ success: true, count: result.length, data: result });
 });
 
-router.get('/products/:id', (req: Request, res: Response) => {
-  const product = products.find(p => p.id === req.params.id || p.slug === req.params.id);
-  if (!product) {
-    return res.status(404).json({ success: false, message: 'Product not found' });
+router.get('/products/:id', async (req: Request, res: Response) => {
+  try {
+    const product = await getProductByIdOrSlug(req.params.id);
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+    res.json({ success: true, data: product });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to fetch product' });
   }
-  res.json({ success: true, data: product });
 });
 
-router.post('/products', requireAdminAuth, (req: Request, res: Response) => {
-  const newProduct: Product = {
-    ...req.body,
-    id: req.body.id || `prod-${Date.now()}`,
-    slug: req.body.slug || req.body.nameEn.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-    rating: req.body.rating || 5.0,
-    reviewCount: req.body.reviewCount || 0,
-  };
-  products.unshift(newProduct);
-  res.status(201).json({ success: true, data: newProduct });
-});
-
-router.put('/products/:id', requireAdminAuth, (req: Request, res: Response) => {
-  const index = products.findIndex(p => p.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ success: false, message: 'Product not found' });
+router.post('/products', requireAdminAuth, async (req: Request, res: Response) => {
+  const parseResult = ProductSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Product validation failed', 
+      errors: parseResult.error.format() 
+    });
   }
-  products[index] = { ...products[index], ...req.body, id: req.params.id };
-  res.json({ success: true, data: products[index] });
-});
 
-router.delete('/products/:id', requireAdminAuth, (req: Request, res: Response) => {
-  const initialLen = products.length;
-  products = products.filter(p => p.id !== req.params.id);
-  if (products.length === initialLen) {
-    return res.status(404).json({ success: false, message: 'Product not found' });
+  try {
+    const validated = parseResult.data;
+    const newProduct: Product = {
+      id: validated.id || `prod-${Date.now()}`,
+      slug: validated.slug || validated.nameEn.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      nameEn: validated.nameEn,
+      nameBn: validated.nameBn || validated.nameEn,
+      category: validated.category,
+      price: validated.price,
+      discountPrice: validated.discountPrice || undefined,
+      stock: validated.stock,
+      rating: validated.rating || 5.0,
+      reviewCount: validated.reviewCount || 0,
+      sku: validated.sku || `7X-${Date.now().toString().slice(-4)}`,
+      brand: validated.brand || '7X Brand',
+      images: validated.images && validated.images.length > 0 
+        ? validated.images 
+        : ['https://images.unsplash.com/photo-1546868871-7041f2a55e12?auto=format&fit=crop&q=80&w=800'],
+      descriptionEn: validated.descriptionEn || 'Authentic merchandise from 7X_SHOP.',
+      descriptionBn: validated.descriptionBn || 'উচ্চমানের আসল পণ্য।',
+      specs: validated.specs || { Warranty: '1 Year' },
+      colors: validated.colors || ['Black'],
+      sizes: validated.sizes || [],
+      isHot: validated.isHot ?? false,
+      isFeatured: validated.isFeatured ?? false,
+      isNew: validated.isNew ?? true,
+    };
+
+    const saved = await saveProduct(newProduct);
+    res.status(201).json({ success: true, data: saved });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to save product' });
   }
-  res.json({ success: true, message: 'Product deleted' });
 });
 
+router.put('/products/:id', requireAdminAuth, async (req: Request, res: Response) => {
+  const parseResult = ProductUpdateSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Product update validation failed', 
+      errors: parseResult.error.format() 
+    });
+  }
+
+  try {
+    const existing = await getProductByIdOrSlug(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    const updatedData: Product = {
+      ...existing,
+      ...parseResult.data,
+      id: existing.id,
+      discountPrice: parseResult.data.discountPrice !== undefined ? (parseResult.data.discountPrice || undefined) : existing.discountPrice,
+    };
+
+    const saved = await saveProduct(updatedData);
+    res.json({ success: true, data: saved });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to update product' });
+  }
+});
+
+router.delete('/products/:id', requireAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const deleted = await deleteProduct(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+    res.json({ success: true, message: 'Product deleted' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to delete product' });
+  }
+});
+
+// ----------------------------------------------------
 // 2. Categories API
-router.get('/categories', (_req: Request, res: Response) => {
-  res.json({ success: true, data: INITIAL_CATEGORIES });
-});
-
-// 3. Coupons API
-router.get('/coupons/validate/:code', (req: Request, res: Response) => {
-  const code = req.params.code.toUpperCase().trim();
-  const coupon = INITIAL_COUPONS.find(c => c.code === code);
-  if (!coupon) {
-    return res.status(404).json({ success: false, message: 'Invalid coupon code' });
+// ----------------------------------------------------
+router.get('/categories', async (_req: Request, res: Response) => {
+  try {
+    const categories = await getCategories();
+    res.json({ success: true, data: categories });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to fetch categories' });
   }
-  res.json({ success: true, data: coupon });
 });
 
+// ----------------------------------------------------
+// 3. Coupons API (Server-side Firestore single source of truth)
+// ----------------------------------------------------
+router.get('/coupons/validate/:code', async (req: Request, res: Response) => {
+  try {
+    const code = req.params.code.toUpperCase().trim();
+    const coupon = await getCoupon(code);
+
+    if (!coupon) {
+      return res.status(404).json({ success: false, message: 'Invalid promo coupon code' });
+    }
+
+    // Check Expiry Date
+    if (coupon.expiryDate && new Date(coupon.expiryDate).getTime() < Date.now()) {
+      return res.status(400).json({ success: false, message: 'This coupon has expired' });
+    }
+
+    // Check Usage Limit
+    if (coupon.usageLimit && (coupon.usedCount || 0) >= coupon.usageLimit) {
+      return res.status(400).json({ success: false, message: 'This coupon usage limit has been reached' });
+    }
+
+    res.json({ success: true, data: coupon });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to validate coupon' });
+  }
+});
+
+// ----------------------------------------------------
 // 4. Orders API
+// ----------------------------------------------------
 // 4a. Admin Orders List (Requires valid admin token. No customer parameter bypass)
-router.get('/orders', requireAdminAuth, (req: Request, res: Response) => {
-  const { status, search } = req.query;
+router.get('/orders', requireAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const { status, search } = req.query;
+    const orders = await getOrders({
+      status: typeof status === 'string' ? status : undefined,
+      search: typeof search === 'string' ? search : undefined,
+    });
 
-  let filtered = [...orders];
-
-  if (status && typeof status === 'string' && status !== 'all') {
-    filtered = filtered.filter(o => o.orderStatus === status);
+    res.json({ success: true, count: orders.length, data: orders });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to fetch orders' });
   }
-
-  if (search && typeof search === 'string') {
-    const q = search.toLowerCase().trim();
-    filtered = filtered.filter(o =>
-      o.orderNumber.toLowerCase().includes(q) ||
-      o.customerName.toLowerCase().includes(q) ||
-      o.phone.includes(q)
-    );
-  }
-
-  // Sort newest first
-  filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-  res.json({ success: true, count: filtered.length, data: filtered });
 });
 
-// 4b. Customer Order Tracking (Requires BOTH orderNumber and phone to match exactly; returns minimal fields only)
-router.get('/orders/track', (req: Request, res: Response) => {
+// 4b. Customer Order Tracking (Requires BOTH orderNumber and phone exact match)
+router.get('/orders/track', async (req: Request, res: Response) => {
   const { orderNumber, phone } = req.query;
 
   if (!orderNumber || !phone || typeof orderNumber !== 'string' || typeof phone !== 'string') {
@@ -337,8 +430,8 @@ router.get('/orders/track', (req: Request, res: Response) => {
     });
   }
 
-  const queryOrderNum = orderNumber.trim().toUpperCase().replace(/^#/, '');
-  const cleanQueryPhone = phone.trim().replace(/[\s-]/g, '');
+  const queryOrderNum = orderNumber.trim();
+  const cleanQueryPhone = phone.trim();
 
   if (!queryOrderNum || !cleanQueryPhone) {
     return res.status(400).json({
@@ -347,254 +440,103 @@ router.get('/orders/track', (req: Request, res: Response) => {
     });
   }
 
-  // EXACT match on orderNumber and EXACT match on phone (not includes)
-  const matched = orders.find(o => {
-    const oNum = (o.orderNumber || o.id).toUpperCase().replace(/^#/, '');
-    const oPhone = o.phone.trim().replace(/[\s-]/g, '');
-    return oNum === queryOrderNum && oPhone === cleanQueryPhone;
-  });
+  try {
+    const matched = await getOrderByNumberAndPhone(queryOrderNum, cleanQueryPhone);
 
-  if (!matched) {
-    return res.status(404).json({
-      success: false,
-      message: 'Order not found. Please verify both your order number and phone number.',
+    if (!matched) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found. Please verify both your order number and phone number.',
+      });
+    }
+
+    // Return minimal fields only (orderNumber, status, items, total, createdAt)
+    return res.json({
+      success: true,
+      data: {
+        orderNumber: matched.orderNumber || matched.id,
+        status: matched.orderStatus,
+        items: matched.items.map(it => ({
+          productName: it.productName,
+          productImage: it.productImage,
+          price: it.price,
+          quantity: it.quantity,
+          selectedColor: it.selectedColor,
+          selectedSize: it.selectedSize,
+        })),
+        total: matched.totalAmount,
+        createdAt: matched.createdAt,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: err?.message || 'Tracking failed' });
+  }
+});
+
+// 4c. Atomic Order Creation (Stock check + stock decrement + order creation in ONE transaction)
+router.post('/orders', orderRateLimiter, async (req: Request, res: Response) => {
+  const parseResult = OrderCreateSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({ 
+      success: false, 
+      message: parseResult.error.issues[0]?.message || 'Order validation failed',
+      errors: parseResult.error.format() 
     });
   }
 
-  // Return minimal fields only (orderNumber, status, items, total)
-  return res.json({
-    success: true,
-    data: {
-      orderNumber: matched.orderNumber || matched.id,
-      status: matched.orderStatus,
-      items: matched.items.map(it => ({
-        productName: it.productName,
-        productImage: it.productImage,
-        price: it.price,
-        quantity: it.quantity,
-        selectedColor: it.selectedColor,
-        selectedSize: it.selectedSize,
-      })),
-      total: matched.totalAmount,
-      createdAt: matched.createdAt,
-    },
-  });
-});
+  const orderData = parseResult.data;
 
-router.post('/orders', orderRateLimiter, async (req: Request, res: Response) => {
-  try {
-    const rawOrder = req.body;
-    if (!rawOrder || typeof rawOrder !== 'object') {
-      return res.status(400).json({ success: false, message: 'Invalid order request payload' });
-    }
+  // Block credit cards until certified gateway is live
+  if (orderData.paymentMethod === 'card') {
+    return res.status(400).json({
+      success: false,
+      message: 'Credit / Debit card processing is currently unavailable. Please select Cash on Delivery or Mobile Banking (bKash / Nagad / Rocket).',
+    });
+  }
 
-    // 1. Strict Input Validation & Sanitization
-    const customerName = String(rawOrder.customerName || '').trim();
-    const phone = String(rawOrder.phone || '').trim();
-    const email = String(rawOrder.email || '').trim();
-    const address = String(rawOrder.address || '').trim();
-    const district = String(rawOrder.district || 'Dhaka').trim();
-    const notes = String(rawOrder.notes || '').trim().slice(0, 500);
-    const paymentMethod = String(rawOrder.paymentMethod || 'cod').toLowerCase();
-    const items = rawOrder.items;
-
-    if (!customerName || customerName.length < 2 || customerName.length > 100) {
-      return res.status(400).json({ success: false, message: 'Please provide a valid customer full name (2-100 characters)' });
-    }
-
-    const cleanPhone = phone.replace(/[\s-]/g, '');
-    if (!cleanPhone || cleanPhone.length < 10 || cleanPhone.length > 15 || !/^\+?\d+$/.test(cleanPhone)) {
-      return res.status(400).json({ success: false, message: 'Please provide a valid phone number (10-15 digits)' });
-    }
-
-    if (!address || address.length < 5 || address.length > 300) {
-      return res.status(400).json({ success: false, message: 'Please provide a full delivery address (minimum 5 characters)' });
-    }
-
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ success: false, message: 'Your order must contain at least one item' });
-    }
-
-    // Priority 4: Block raw credit card submissions until certified gateway is live
-    if (paymentMethod === 'card') {
+  // Validate MFS fields
+  if (['bkash', 'nagad', 'rocket'].includes(orderData.paymentMethod)) {
+    if (!orderData.trxId || orderData.trxId.length < 3) {
       return res.status(400).json({
         success: false,
-        message: 'Credit / Debit card processing is currently unavailable. Please select Cash on Delivery or Mobile Banking (bKash / Nagad / Rocket).',
+        message: 'Valid Transaction ID (TrxID) is required for mobile banking payments',
       });
     }
-
-    const allowedPaymentMethods = ['cod', 'bkash', 'nagad', 'rocket'];
-    if (!allowedPaymentMethods.includes(paymentMethod)) {
-      return res.status(400).json({ success: false, message: `Unsupported payment method: ${paymentMethod}` });
-    }
-
-    // Validate Mobile Banking details
-    let validatedTrxId: string | undefined = undefined;
-    let validatedSenderNumber: string | undefined = undefined;
-    if (['bkash', 'nagad', 'rocket'].includes(paymentMethod)) {
-      const rawTrx = String(rawOrder.trxId || '').trim();
-      const rawSender = String(rawOrder.senderNumber || '').trim().replace(/[\s-]/g, '');
-      if (!rawTrx || rawTrx.length < 3 || rawTrx.length > 40) {
-        return res.status(400).json({ success: false, message: 'Valid Transaction ID (TrxID) is required for mobile banking payments' });
-      }
-      if (!rawSender || rawSender.length < 10) {
-        return res.status(400).json({ success: false, message: 'Sender mobile number is required for mobile banking verification' });
-      }
-      validatedTrxId = rawTrx.toUpperCase();
-      validatedSenderNumber = rawSender;
-    }
-
-    // 2. Server-side Product Lookup, Stock Verification & Price Recalculation (Priority 3)
-    let verifiedSubtotal = 0;
-    const verifiedItems: Order['items'] = [];
-
-    for (const item of items) {
-      const productId = String(item.productId || '');
-      const quantity = Math.floor(Number(item.quantity));
-
-      if (!productId || isNaN(quantity) || quantity < 1 || quantity > 50) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid product quantity (${quantity}) for product ID: ${productId}`,
-        });
-      }
-
-      const prod = products.find(p => p.id === productId);
-      if (!prod) {
-        return res.status(400).json({
-          success: false,
-          message: `Product '${productId}' not found in active inventory`,
-        });
-      }
-
-      if (prod.stock < quantity) {
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient stock for '${prod.nameEn}'. In stock: ${prod.stock}, Requested: ${quantity}`,
-        });
-      }
-
-      // CRITICAL: Always use official server catalog price (ignore any price sent by client)
-      const officialPrice = (typeof prod.discountPrice === 'number' && prod.discountPrice > 0)
-        ? prod.discountPrice
-        : prod.price;
-
-      verifiedSubtotal += officialPrice * quantity;
-
-      const orderItemImage = (prod.images && prod.images.length > 0 && prod.images[0]?.trim())
-        ? prod.images[0].trim()
-        : 'https://images.unsplash.com/photo-1546868871-7041f2a55e12?auto=format&fit=crop&q=80&w=800';
-
-      verifiedItems.push({
-        productId: prod.id,
-        productName: prod.nameEn,
-        productImage: orderItemImage,
-        price: officialPrice,
-        quantity,
-        selectedColor: item.selectedColor ? String(item.selectedColor) : undefined,
-        selectedSize: item.selectedSize ? String(item.selectedSize) : undefined,
+    if (!orderData.senderNumber || orderData.senderNumber.length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Sender mobile number is required for mobile banking verification',
       });
     }
+  }
 
-    // 3. Server-side Coupon & Discount Calculation
-    let verifiedDiscount = 0;
-    let validatedCouponCode: string | undefined = undefined;
-
-    if (rawOrder.couponCode && typeof rawOrder.couponCode === 'string') {
-      const cleanCoupon = rawOrder.couponCode.toUpperCase().trim();
-      const coupon = INITIAL_COUPONS.find(c => c.code === cleanCoupon);
-      if (coupon) {
-        const meetsMinSpend = !coupon.minSpend || verifiedSubtotal >= coupon.minSpend;
-        if (meetsMinSpend) {
-          validatedCouponCode = coupon.code;
-          if (coupon.discountType === 'percentage') {
-            verifiedDiscount = Math.round((verifiedSubtotal * coupon.discountValue) / 100);
-          } else if (coupon.discountType === 'fixed') {
-            verifiedDiscount = Math.min(verifiedSubtotal, coupon.discountValue);
-          }
-        }
-      }
-    }
-
-    // 4. Server-side Delivery Fee Calculation
-    let verifiedDeliveryFee = 0;
-    const isFreeShippingCoupon = validatedCouponCode && 
-      INITIAL_COUPONS.find(c => c.code === validatedCouponCode)?.discountType === 'free_shipping';
-    const freeDeliveryThreshold = siteSettings.freeDeliveryThreshold ?? 2000;
-
-    if (isFreeShippingCoupon || verifiedSubtotal >= freeDeliveryThreshold) {
-      verifiedDeliveryFee = 0;
-    } else if (district.toLowerCase() !== 'dhaka') {
-      verifiedDeliveryFee = siteSettings.outsideDhakaDeliveryFee ?? 120;
-    } else {
-      verifiedDeliveryFee = siteSettings.insideDhakaDeliveryFee ?? 60;
-    }
-
-    // 5. Server-side Final Total Amount
-    const verifiedTotalAmount = Math.max(0, verifiedSubtotal - verifiedDiscount + verifiedDeliveryFee);
-
-    // Decrement stock for ordered items
-    verifiedItems.forEach(item => {
-      const prod = products.find(p => p.id === item.productId);
-      if (prod && prod.stock > 0) {
-        prod.stock = Math.max(0, prod.stock - item.quantity);
-      }
+  try {
+    const newOrder = await createOrderInTransaction({
+      customerName: orderData.customerName,
+      phone: orderData.phone,
+      email: orderData.email || undefined,
+      address: orderData.address,
+      district: orderData.district,
+      notes: orderData.notes || undefined,
+      paymentMethod: orderData.paymentMethod,
+      trxId: orderData.trxId ? orderData.trxId.toUpperCase() : undefined,
+      senderNumber: orderData.senderNumber,
+      couponCode: orderData.couponCode,
+      items: orderData.items,
     });
 
-    const currentId = (nextOrderId++).toString();
-    const newOrder: Order = {
-      id: currentId,
-      orderNumber: `7X-${currentId}`,
-      customerName,
-      phone: cleanPhone,
-      email: email || `${cleanPhone}@customer.7x-shop.com`,
-      address,
-      district,
-      notes,
-      items: verifiedItems,
-      subtotal: verifiedSubtotal,
-      deliveryFee: verifiedDeliveryFee,
-      discount: verifiedDiscount,
-      couponCode: validatedCouponCode,
-      totalAmount: verifiedTotalAmount,
-      paymentMethod: paymentMethod as any,
-      paymentStatus: paymentMethod === 'cod' ? 'pending' : (validatedTrxId ? 'pending' : 'pending'),
-      orderStatus: 'pending',
-      trxId: validatedTrxId,
-      senderNumber: validatedSenderNumber,
-      mfsProvider: ['bkash', 'nagad', 'rocket'].includes(paymentMethod) ? (paymentMethod as any) : undefined,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      telegramNotified: false,
-      emailNotified: true,
-    };
-
     // Dispatch Telegram notification directly from server
-    const log = await sendTelegramNotification(newOrder, telegramConfig);
-    newOrder.telegramNotified = log.status === 'success' || log.status === 'simulated';
-    notificationLogs.unshift(log);
+    const tgConfig = await getTelegramConfig();
+    const log = await sendTelegramNotification(newOrder, tgConfig);
 
-    // Save order in server storage
-    orders.unshift(newOrder);
-
-    // Link customer
-    const existingUser = users.find(u => u.phone === newOrder.phone || (newOrder.email && u.email === newOrder.email));
-    if (!existingUser) {
-      users.push({
-        id: `usr-${Date.now()}`,
-        name: newOrder.customerName,
-        phone: newOrder.phone,
-        email: newOrder.email,
-        role: 'customer',
-        address: newOrder.address,
-        district: newOrder.district,
-        createdAt: new Date().toISOString(),
-      });
+    if (log.status === 'success' || log.status === 'simulated') {
+      await updateOrderNotificationStatus(newOrder.id, true);
     }
+    await addNotificationLog(log);
 
     return res.status(201).json({
       success: true,
-      message: 'Order created successfully with verified prices',
+      message: 'Order created successfully with verified prices and reserved stock',
       data: newOrder,
       notification: {
         status: log.status,
@@ -602,142 +544,212 @@ router.post('/orders', orderRateLimiter, async (req: Request, res: Response) => 
       },
     });
   } catch (error: any) {
-    return res.status(500).json({ success: false, message: error?.message || 'Failed to process order' });
+    return res.status(400).json({ 
+      success: false, 
+      message: error?.message || 'Failed to process order' 
+    });
   }
 });
 
-router.patch('/orders/:id/status', requireAdminAuth, (req: Request, res: Response) => {
-  const { status } = req.body;
-  const order = orders.find(o => o.id === req.params.id);
-  if (!order) {
-    return res.status(404).json({ success: false, message: 'Order not found' });
+// 4d. Order Status Update (Admin)
+router.patch('/orders/:id/status', requireAdminAuth, async (req: Request, res: Response) => {
+  const parseResult = OrderStatusSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({ 
+      success: false, 
+      message: parseResult.error.issues[0]?.message || 'Invalid order status',
+      errors: parseResult.error.format() 
+    });
   }
-  order.orderStatus = status;
-  order.updatedAt = new Date().toISOString();
-  res.json({ success: true, data: order });
+
+  try {
+    const updated = await updateOrderStatus(req.params.id, parseResult.data.status as OrderStatus);
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    res.json({ success: true, data: updated });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to update order status' });
+  }
 });
 
+// ----------------------------------------------------
 // 5. Admin Stats API (Protected)
-router.get('/admin/stats', requireAdminAuth, (_req: Request, res: Response) => {
-  const totalOrders = orders.length;
-  const totalRevenue = orders.reduce((sum, o) => o.orderStatus !== 'cancelled' ? sum + o.totalAmount : sum, 0);
-  const totalProducts = products.length;
-  const totalCustomers = users.filter(u => u.role === 'customer').length;
-  const pendingOrders = orders.filter(o => o.orderStatus === 'pending').length;
-
-  res.json({
-    success: true,
-    data: {
-      totalOrders,
-      totalRevenue,
-      totalProducts,
-      totalCustomers,
-      pendingOrders,
-    },
-  });
+// ----------------------------------------------------
+router.get('/admin/stats', requireAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    const stats = await getAdminStats();
+    res.json({ success: true, data: stats });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to fetch admin stats' });
+  }
 });
 
+// ----------------------------------------------------
 // 6. Customers API (Protected)
-router.get('/customers', requireAdminAuth, (req: Request, res: Response) => {
-  const { query } = req.query;
-  let result = users.filter(u => u.role === 'customer');
-  if (query && typeof query === 'string') {
-    const q = query.toLowerCase();
-    result = result.filter(u => u.name.toLowerCase().includes(q) || u.phone.includes(q) || u.email.toLowerCase().includes(q));
+// ----------------------------------------------------
+router.get('/customers', requireAdminAuth, async (req: Request, res: Response) => {
+  try {
+    const customers = await getCustomers(typeof req.query.query === 'string' ? req.query.query : undefined);
+    res.json({ success: true, count: customers.length, data: customers });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to fetch customers' });
   }
-  res.json({ success: true, count: result.length, data: result });
 });
 
+// ----------------------------------------------------
 // 7. Telegram Configuration & Notification Logs (Protected)
-router.get('/telegram/config', requireAdminAuth, (_req: Request, res: Response) => {
-  // Mask the bot token to prevent exposing sensitive credentials to the browser
-  const maskedToken = telegramConfig.botToken
-    ? `${telegramConfig.botToken.slice(0, 6)}...${telegramConfig.botToken.slice(-4)}`
-    : '';
+// ----------------------------------------------------
+router.get('/telegram/config', requireAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    const config = await getTelegramConfig();
+    const maskedToken = config.botToken
+      ? `${config.botToken.slice(0, 6)}...${config.botToken.slice(-4)}`
+      : '';
 
-  res.json({
-    success: true,
-    data: {
-      ...telegramConfig,
-      botToken: maskedToken,
-    },
-  });
+    res.json({
+      success: true,
+      data: {
+        ...config,
+        botToken: maskedToken,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to fetch Telegram config' });
+  }
 });
 
-router.post('/telegram/config', requireAdminAuth, (req: Request, res: Response) => {
-  const { botToken, chatId, enabled } = req.body;
-  // If the token is masked, keep the existing real token
-  if (botToken !== undefined && typeof botToken === 'string' && !botToken.includes('...')) {
-    telegramConfig.botToken = botToken;
+router.post('/telegram/config', requireAdminAuth, async (req: Request, res: Response) => {
+  const parseResult = TelegramConfigSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Validation failed', 
+      errors: parseResult.error.format() 
+    });
   }
-  if (chatId !== undefined) telegramConfig.chatId = chatId;
-  if (enabled !== undefined) telegramConfig.enabled = Boolean(enabled);
-  res.json({ success: true, message: 'Telegram config updated successfully' });
+
+  try {
+    const current = await getTelegramConfig();
+    const updates = parseResult.data;
+
+    let botToken = current.botToken;
+    if (updates.botToken && !updates.botToken.includes('...')) {
+      botToken = updates.botToken;
+    }
+
+    const updated = await updateTelegramConfig({
+      botToken,
+      chatId: updates.chatId !== undefined ? updates.chatId : current.chatId,
+      enabled: updates.enabled !== undefined ? updates.enabled : current.enabled,
+      lastTestedAt: new Date().toISOString(),
+    });
+
+    res.json({ success: true, message: 'Telegram config updated successfully', data: updated });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to update Telegram config' });
+  }
 });
 
 router.post('/telegram/test', requireAdminAuth, async (req: Request, res: Response) => {
-  const config = {
-    botToken: req.body.botToken && !req.body.botToken.includes('...') ? req.body.botToken : telegramConfig.botToken,
-    chatId: req.body.chatId || telegramConfig.chatId,
-    enabled: true,
-  };
-  const result = await sendTestTelegramMessage(config);
-  res.json(result);
+  try {
+    const current = await getTelegramConfig();
+    const config = {
+      botToken: req.body.botToken && !req.body.botToken.includes('...') ? req.body.botToken : current.botToken,
+      chatId: req.body.chatId || current.chatId,
+      enabled: true,
+    };
+    const result = await sendTestTelegramMessage(config);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to test Telegram' });
+  }
 });
 
-router.get('/telegram/logs', requireAdminAuth, (_req: Request, res: Response) => {
-  res.json({ success: true, data: notificationLogs });
+router.get('/telegram/logs', requireAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    const logs = await getNotificationLogs();
+    res.json({ success: true, data: logs });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to fetch notification logs' });
+  }
 });
 
+// ----------------------------------------------------
 // 8. Reviews API
-router.get('/reviews/:productId', (req: Request, res: Response) => {
-  const prodReviews = reviews.filter(r => r.productId === req.params.productId);
-  res.json({ success: true, data: prodReviews });
+// ----------------------------------------------------
+router.get('/reviews/:productId', async (req: Request, res: Response) => {
+  try {
+    const reviews = await getReviewsByProduct(req.params.productId);
+    res.json({ success: true, data: reviews });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to fetch reviews' });
+  }
 });
 
-router.post('/reviews', (req: Request, res: Response) => {
-  const newRev: ProductReview = {
-    id: `rev-${Date.now()}`,
-    productId: req.body.productId,
-    customerName: req.body.customerName || 'Verified Buyer',
-    rating: Number(req.body.rating) || 5,
-    comment: req.body.comment || '',
-    date: new Date().toISOString().split('T')[0],
-    verifiedPurchase: true,
-  };
-  reviews.unshift(newRev);
-
-  // Update product average rating
-  const prod = products.find(p => p.id === newRev.productId);
-  if (prod) {
-    const allProdReviews = reviews.filter(r => r.productId === prod.id);
-    const avg = allProdReviews.reduce((sum, r) => sum + r.rating, 0) / allProdReviews.length;
-    prod.rating = Number(avg.toFixed(1));
-    prod.reviewCount = allProdReviews.length;
+router.post('/reviews', async (req: Request, res: Response) => {
+  const parseResult = ProductReviewSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Review validation failed', 
+      errors: parseResult.error.format() 
+    });
   }
 
-  res.status(201).json({ success: true, data: newRev });
-});
+  try {
+    const data = parseResult.data;
+    const newRev = await addReview({
+      id: `rev-${Date.now()}`,
+      productId: data.productId,
+      customerName: data.customerName,
+      rating: data.rating,
+      comment: data.comment,
+      date: new Date().toISOString().split('T')[0],
+      verifiedPurchase: true,
+    });
 
-// 9. Site Settings & Hero Slider Content Management API
-router.get('/site-settings', (_req: Request, res: Response) => {
-  res.json({ success: true, data: siteSettings });
-});
-
-router.put('/site-settings', requireAdminAuth, (req: Request, res: Response) => {
-  const updates = req.body;
-  if (!updates || typeof updates !== 'object') {
-    return res.status(400).json({ success: false, message: 'Invalid payload' });
+    res.status(201).json({ success: true, data: newRev });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to save review' });
   }
-  siteSettings = {
-    ...siteSettings,
-    ...updates,
-  };
-  res.json({ success: true, message: 'Site settings updated successfully', data: siteSettings });
 });
 
-router.post('/site-settings/reset', requireAdminAuth, (_req: Request, res: Response) => {
-  siteSettings = JSON.parse(JSON.stringify(DEFAULT_SITE_SETTINGS));
-  res.json({ success: true, message: 'Site settings reset to defaults', data: siteSettings });
+// ----------------------------------------------------
+// 9. Site Settings & Content Management API
+// ----------------------------------------------------
+router.get('/site-settings', async (_req: Request, res: Response) => {
+  try {
+    const settings = await getSiteSettings();
+    res.json({ success: true, data: settings });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to fetch site settings' });
+  }
 });
 
+router.put('/site-settings', requireAdminAuth, async (req: Request, res: Response) => {
+  const parseResult = SiteSettingsSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Site settings validation failed', 
+      errors: parseResult.error.format() 
+    });
+  }
+
+  try {
+    const updated = await updateSiteSettings(parseResult.data as unknown as Partial<SiteSettings>);
+    res.json({ success: true, message: 'Site settings updated successfully', data: updated });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to update site settings' });
+  }
+});
+
+router.post('/site-settings/reset', requireAdminAuth, async (_req: Request, res: Response) => {
+  try {
+    const reset = await resetSiteSettings();
+    res.json({ success: true, message: 'Site settings reset to defaults', data: reset });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err?.message || 'Failed to reset site settings' });
+  }
+});

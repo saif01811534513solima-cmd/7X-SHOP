@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   LayoutDashboard, 
   Package, 
@@ -153,7 +153,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
 
   const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'products' | 'customers' | 'telegram' | 'payments' | 'security' | 'site_settings'>('overview');
 
-  
+  // Requirement 5: Load admin data from server on login and refresh orders every 30 seconds
+  useEffect(() => {
+    store.loadAdminData();
+    const interval = setInterval(() => {
+      store.loadOrders();
+      store.loadAdminStats();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [store]);
+
   // Security & Password Change State
   const [currentPasswordInput, setCurrentPasswordInput] = useState('');
   const [newPasswordInput, setNewPasswordInput] = useState('');
@@ -389,8 +398,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
     onBackToStore();
   };
 
-  const handleStatusChange = (orderId: string, status: OrderStatus) => {
-    store.updateOrderStatus(orderId, status);
+  const handleStatusChange = async (orderId: string, status: OrderStatus) => {
+    await store.updateOrderStatus(orderId, status);
   };
 
   const handleSaveTelegram = (e: React.FormEvent) => {
@@ -411,7 +420,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
     setTestResult(result);
   };
 
-  const handleCreateOrUpdateProduct = (e: React.FormEvent) => {
+  const handleCreateOrUpdateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!productForm.nameEn) return;
 
@@ -437,7 +446,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
       colors: productForm.colors || ['Black'],
     };
 
-    store.saveProduct(prodToSave);
+    await store.saveProduct(prodToSave);
     setIsAddProductOpen(false);
     setEditingProduct(null);
     store.showToast('Product Saved', `${prodToSave.nameEn} saved to catalog.`);
@@ -991,8 +1000,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
                             <span className="inline-flex items-center gap-1.5 bg-rose-950/80 border border-rose-800 p-1 rounded-lg">
                               <span className="text-[10px] text-rose-300 font-bold">মুছবেন?</span>
                               <button
-                                onClick={() => {
-                                  store.deleteProduct(prod.id);
+                                onClick={async () => {
+                                  await store.deleteProduct(prod.id);
                                   setDeletingProductId(null);
                                   store.showToast('Product Removed', `${prod.nameEn} has been deleted.`);
                                 }}

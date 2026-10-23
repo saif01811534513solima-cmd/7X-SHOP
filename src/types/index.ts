@@ -133,6 +133,9 @@ export interface Coupon {
   minSpend?: number;
   descriptionEn: string;
   descriptionBn: string;
+  expiryDate?: string;
+  usageLimit?: number;
+  usedCount?: number;
 }
 
 export interface MfsMethodConfig {

@@ -124,13 +124,13 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
     setActiveImage(productImages[prevIdx]);
   };
 
-  const handleApplyCoupon = (e: React.FormEvent) => {
+  const handleApplyCoupon = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!couponCode.trim()) return;
     setIsApplyingCoupon(true);
     setCouponError('');
 
-    const res = store.applyCoupon(couponCode);
+    const res = await store.applyCoupon(couponCode);
     setIsApplyingCoupon(false);
 
     if (res.success && store.appliedCoupon) {

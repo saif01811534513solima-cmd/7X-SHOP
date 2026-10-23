@@ -15,13 +15,36 @@ const PORT = Number(process.env.PORT) || 3000;
 
 app.set('trust proxy', 1);
 
-app.use(
-  helmet({
-    contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false,
-    frameguard: false,
-  })
-);
+if (process.env.NODE_ENV === 'production') {
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'"],
+          styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+          fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+          imgSrc: ["'self'", "data:", "blob:", "https:", "http:"],
+          connectSrc: ["'self'", "https:", "wss:"],
+          frameSrc: ["'self'"],
+          objectSrc: ["'none'"],
+          baseUri: ["'self'"],
+        },
+      },
+      frameguard: { action: 'sameorigin' },
+      crossOriginEmbedderPolicy: false,
+    })
+  );
+} else {
+  // Relaxed for local development and AI Studio preview iframe
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+      frameguard: false,
+    })
+  );
+}
 
 app.use(express.json());
 
@@ -106,7 +129,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     // Production mode: serve static assets from dist
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = process.env.DIST_PATH || path.resolve(process.cwd(), 'dist');
     app.use(
       '/assets',
       express.static(path.join(distPath, 'assets'), {

@@ -13,25 +13,18 @@ import {
   Coupon,
   PaymentSettings,
   SiteSettings,
-  HeroSlide
+  HeroSlide,
+  OrderStatus
 } from '../types';
 import { 
   INITIAL_PRODUCTS, 
   INITIAL_CATEGORIES, 
-  INITIAL_COUPONS, 
-  DEFAULT_SITE_SETTINGS, 
-  INITIAL_HERO_SLIDES 
+  DEFAULT_SITE_SETTINGS 
 } from '../data/mockData';
-import { 
-  initialOrders, 
-  initialUsers, 
-  initialReviews, 
-  defaultTelegramConfig, 
-  initialNotificationLogs 
-} from '../server/db';
+import { defaultTelegramConfig } from '../server/db';
 import { translations } from '../utils/translations';
 
-// Audio chime using Web Audio API for zero external dependency order alerts!
+// Web Audio API order chime
 export function playOrderNotificationChime() {
   try {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -74,27 +67,32 @@ export function playOrderNotificationChime() {
     gain3.connect(ctx.destination);
     osc3.start(now + 0.3);
     osc3.stop(now + 0.85);
-  } catch (e) {
-    // Audio context might be restricted before user gesture
+  } catch {
+    // Audio context may be blocked prior to user interaction
   }
 }
 
+// Strictly UI preferences only in localStorage
 const STORAGE_KEYS = {
-  PRODUCTS: '7x_shop_products_v1',
-  ORDERS: '7x_shop_orders_v1',
-  USERS: '7x_shop_users_v1',
-  CART: '7x_shop_cart_v1',
-  CURRENT_USER: '7x_shop_current_user_v1',
-  LANGUAGE: '7x_shop_lang_v1',
-  CURRENCY: '7x_shop_curr_v1',
-  TELEGRAM_CONFIG: '7x_shop_tg_config_v1',
-  NOTIFICATION_LOGS: '7x_shop_tg_logs_v1',
-  REVIEWS: '7x_shop_reviews_v1',
-  PAYMENT_SETTINGS: '7x_shop_payment_settings_v1',
-  ADMIN_PASSWORD_CHANGED: '7x_shop_admin_password_changed_v1',
-  SITE_SETTINGS: '7x_shop_site_settings_v1',
+  CART: '7x_shop_cart_v2',
+  LANGUAGE: '7x_shop_lang_v2',
+  CURRENCY: '7x_shop_curr_v2',
+  ADMIN_PASSWORD_CHANGED: '7x_shop_admin_password_changed_v2',
 };
 
+// Legacy keys to clean up from customer browsers
+const LEGACY_STORAGE_KEYS = [
+  '7x_shop_products_v1',
+  '7x_shop_orders_v1',
+  '7x_shop_users_v1',
+  '7x_shop_current_user_v1',
+  '7x_shop_tg_config_v1',
+  '7x_shop_tg_logs_v1',
+  '7x_shop_reviews_v1',
+  '7x_shop_payment_settings_v1',
+  '7x_shop_site_settings_v1',
+  '7x_shop_admin_password_v1',
+];
 
 export const defaultPaymentSettings: PaymentSettings = {
   cod: {
@@ -126,10 +124,10 @@ export const defaultPaymentSettings: PaymentSettings = {
     instructionsBn: 'আমাদের রকেট নম্বরে সেন্ড মানি করে TrxID প্রদান করুন।',
   },
   card: {
-    enabled: true,
+    enabled: false,
     labelEn: 'Debit / Credit Card (Visa, Mastercard, Amex)',
     labelBn: 'ডেবিট / ক্রেডিট কার্ড (Visa, Mastercard, Amex)',
-    gatewayName: '3D Secure 2.0 Gateway',
+    gatewayName: '3D Secure 2.0 Gateway (Temporarily Offline)',
   },
 };
 
@@ -154,18 +152,29 @@ export class ShopStateService {
   private static instance: ShopStateService;
   private listeners: Set<() => void> = new Set();
 
-  public products: Product[];
-  public orders: Order[];
-  public users: User[];
+  // Server-authoritative data models
+  public products: Product[] = [...INITIAL_PRODUCTS];
+  public categories: Category[] = [...INITIAL_CATEGORIES];
+  public orders: Order[] = [];
+  public users: User[] = [];
+  public currentUser: User | null = null;
+  public telegramConfig: TelegramConfig = { ...defaultTelegramConfig };
+  public notificationLogs: NotificationLog[] = [];
+  public reviews: ProductReview[] = [];
+  public siteSettings: SiteSettings = JSON.parse(JSON.stringify(DEFAULT_SITE_SETTINGS));
+  public adminStats: {
+    totalOrders: number;
+    totalRevenue: number;
+    totalProducts: number;
+    totalCustomers: number;
+    pendingOrders: number;
+  } | null = null;
+
+  // Client-side UI Preferences (kept in localStorage)
   public cart: CartItem[];
-  public currentUser: User | null;
   public language: Language;
   public currency: Currency;
-  public telegramConfig: TelegramConfig;
-  public notificationLogs: NotificationLog[];
-  public reviews: ProductReview[];
-  public paymentSettings: PaymentSettings;
-  public siteSettings: SiteSettings;
+  public paymentSettings: PaymentSettings = { ...defaultPaymentSettings };
   public appliedCoupon: Coupon | null = null;
   public liveToast: { title: string; message: string; type: 'success' | 'info' | 'order' } | null = null;
   public adminPasswordChangedAt: string;
@@ -173,48 +182,192 @@ export class ShopStateService {
   public adminToken: string | null = null;
 
   private constructor() {
-    this.products = getStoredItem<Product[]>(STORAGE_KEYS.PRODUCTS, INITIAL_PRODUCTS);
-    // Remove prod-topget-rc-drift if it was previously cached in storage
-    if (this.products.some(p => p.id === 'prod-topget-rc-drift')) {
-      this.products = this.products.filter(p => p.id !== 'prod-topget-rc-drift');
-      setStoredItem(STORAGE_KEYS.PRODUCTS, this.products);
+    // Purge obsolete data keys from localStorage
+    if (typeof window !== 'undefined') {
+      LEGACY_STORAGE_KEYS.forEach(key => localStorage.removeItem(key));
     }
-    this.orders = getStoredItem<Order[]>(STORAGE_KEYS.ORDERS, initialOrders);
-    this.users = getStoredItem<User[]>(STORAGE_KEYS.USERS, initialUsers);
+
+    // Load purely UI preferences
     this.cart = getStoredItem<CartItem[]>(STORAGE_KEYS.CART, []);
-    this.currentUser = getStoredItem<User | null>(STORAGE_KEYS.CURRENT_USER, initialUsers[1]); // default to customer
     this.language = getStoredItem<Language>(STORAGE_KEYS.LANGUAGE, 'en');
     this.currency = getStoredItem<Currency>(STORAGE_KEYS.CURRENCY, 'BDT');
-    this.telegramConfig = getStoredItem<TelegramConfig>(STORAGE_KEYS.TELEGRAM_CONFIG, defaultTelegramConfig);
-    this.notificationLogs = getStoredItem<NotificationLog[]>(STORAGE_KEYS.NOTIFICATION_LOGS, initialNotificationLogs);
-    this.reviews = getStoredItem<ProductReview[]>(STORAGE_KEYS.REVIEWS, initialReviews);
-    this.paymentSettings = getStoredItem<PaymentSettings>(STORAGE_KEYS.PAYMENT_SETTINGS, defaultPaymentSettings);
-    
-    // Initialize Site Settings with fallback defaults
-    const storedSettings = getStoredItem<Partial<SiteSettings>>(STORAGE_KEYS.SITE_SETTINGS, {});
-    this.siteSettings = {
-      ...DEFAULT_SITE_SETTINGS,
-      ...storedSettings,
-      heroSlides: (storedSettings.heroSlides && storedSettings.heroSlides.length > 0)
-        ? storedSettings.heroSlides
-        : DEFAULT_SITE_SETTINGS.heroSlides,
-      trustBadges: {
-        ...DEFAULT_SITE_SETTINGS.trustBadges,
-        ...(storedSettings.trustBadges || {}),
-      },
-    };
-
-    // Remove legacy adminPassword from localStorage entirely
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('7x_shop_admin_password_v1');
-    }
     this.adminPasswordChangedAt = getStoredItem<string>(STORAGE_KEYS.ADMIN_PASSWORD_CHANGED, '2026-01-01T00:00:00.000Z');
+
     this.adminUnlocked = typeof window !== 'undefined' ? sessionStorage.getItem('7x_shop_admin_unlocked') === 'true' : false;
     this.adminToken = typeof window !== 'undefined' ? sessionStorage.getItem('7x_shop_admin_token') : null;
+
+    // Load server-side data on initialization
+    if (typeof window !== 'undefined') {
+      this.loadInitialData().catch(err => {
+        console.warn('Initial data load warning:', err);
+      });
+      if (this.adminUnlocked && this.adminToken) {
+        this.loadAdminData().catch(() => {});
+      }
+    }
   }
 
+  // ----------------------------------------------------
+  // Server-authoritative data loading (Single Source of Truth)
+  // ----------------------------------------------------
+  public async loadInitialData(): Promise<void> {
+    await Promise.allSettled([
+      this.loadProducts(),
+      this.loadCategories(),
+      this.loadSiteSettings(),
+    ]);
+  }
+
+  public async loadProducts(): Promise<void> {
+    try {
+      const res = await fetch('/api/products');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          this.products = json.data;
+          this.notify();
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to fetch products from server:', err);
+    }
+  }
+
+  public async loadCategories(): Promise<void> {
+    try {
+      const res = await fetch('/api/categories');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          this.categories = json.data;
+          this.notify();
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to fetch categories from server:', err);
+    }
+  }
+
+  public async loadSiteSettings(): Promise<void> {
+    try {
+      const res = await fetch('/api/site-settings');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.data) {
+          this.siteSettings = json.data;
+          this.notify();
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to fetch site settings from server:', err);
+    }
+  }
+
+  public async loadReviews(productId: string): Promise<ProductReview[]> {
+    try {
+      const res = await fetch(`/api/reviews/${productId}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          const others = this.reviews.filter(r => r.productId !== productId);
+          this.reviews = [...json.data, ...others];
+          this.notify();
+          return json.data;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to fetch product reviews from server:', err);
+    }
+    return [];
+  }
+
+  // ----------------------------------------------------
+  // Admin Server-Side Data Loaders (orders, customers, stats, telegram logs)
+  // ----------------------------------------------------
+  public async loadAdminData(): Promise<void> {
+    if (!this.adminToken) return;
+    await Promise.allSettled([
+      this.loadOrders(),
+      this.loadCustomers(),
+      this.loadAdminStats(),
+      this.loadTelegramConfig(),
+      this.loadTelegramLogs(),
+    ]);
+  }
+
+  public async loadOrders(): Promise<void> {
+    if (!this.adminToken) return;
+    try {
+      const res = await this.apiFetch('/api/orders');
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        this.orders = json.data;
+        this.notify();
+      }
+    } catch (err) {
+      console.warn('Admin orders load error:', err);
+    }
+  }
+
+  public async loadCustomers(): Promise<void> {
+    if (!this.adminToken) return;
+    try {
+      const res = await this.apiFetch('/api/customers');
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        this.users = json.data;
+        this.notify();
+      }
+    } catch (err) {
+      console.warn('Admin customers load error:', err);
+    }
+  }
+
+  public async loadAdminStats(): Promise<void> {
+    if (!this.adminToken) return;
+    try {
+      const res = await this.apiFetch('/api/admin/stats');
+      const json = await res.json();
+      if (json.success && json.data) {
+        this.adminStats = json.data;
+        this.notify();
+      }
+    } catch (err) {
+      console.warn('Admin stats load error:', err);
+    }
+  }
+
+  public async loadTelegramConfig(): Promise<void> {
+    if (!this.adminToken) return;
+    try {
+      const res = await this.apiFetch('/api/telegram/config');
+      const json = await res.json();
+      if (json.success && json.data) {
+        this.telegramConfig = json.data;
+        this.notify();
+      }
+    } catch (err) {
+      console.warn('Admin telegram config load error:', err);
+    }
+  }
+
+  public async loadTelegramLogs(): Promise<void> {
+    if (!this.adminToken) return;
+    try {
+      const res = await this.apiFetch('/api/telegram/logs');
+      const json = await res.json();
+      if (json.success && Array.isArray(json.data)) {
+        this.notificationLogs = json.data;
+        this.notify();
+      }
+    } catch (err) {
+      console.warn('Admin telegram logs load error:', err);
+    }
+  }
+
+  // ----------------------------------------------------
   // Centralized authenticated API Fetch helper
-  // Automatically attaches x-admin-token when admin is logged in, logs out on 401, and throws errors.
+  // ----------------------------------------------------
   public async apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
     const headers = new Headers(options.headers || {});
     if (this.adminToken) {
@@ -288,7 +441,6 @@ export class ShopStateService {
     }
   }
 
-
   public static getInstance(): ShopStateService {
     if (!ShopStateService.instance) {
       ShopStateService.instance = new ShopStateService();
@@ -342,14 +494,13 @@ export class ShopStateService {
     }, 5000);
   }
 
-  // Payment Settings Management
+  // Payment Settings
   public updatePaymentSettings(settings: PaymentSettings): void {
     this.paymentSettings = { ...settings };
-    setStoredItem(STORAGE_KEYS.PAYMENT_SETTINGS, this.paymentSettings);
     this.notify();
   }
 
-  // Cart operations
+  // Cart operations (purely client UI state)
   public addToCart(product: Product, quantity = 1, selectedColor?: string, selectedSize?: string): void {
     const existingIndex = this.cart.findIndex(
       item =>
@@ -400,21 +551,36 @@ export class ShopStateService {
     this.notify();
   }
 
-  public applyCoupon(code: string): { success: boolean; message: string } {
+  // Server-side Coupon validation (Single Source of Truth)
+  public async applyCoupon(code: string): Promise<{ success: boolean; message: string }> {
     const cleanCode = code.toUpperCase().trim();
-    const coupon = INITIAL_COUPONS.find(c => c.code === cleanCode);
-    if (!coupon) {
+    if (!cleanCode) {
+      return { success: false, message: 'Please enter a coupon code' };
+    }
+
+    try {
+      const res = await fetch(`/api/coupons/validate/${encodeURIComponent(cleanCode)}`);
+      const data = await res.json();
+
+      if (data.success && data.data) {
+        this.appliedCoupon = data.data;
+        this.notify();
+        return { 
+          success: true, 
+          message: this.language === 'bn' ? data.data.descriptionBn : data.data.descriptionEn 
+        };
+      }
+
       return { 
         success: false, 
-        message: this.language === 'bn' ? 'অবৈধ কুপন কোড' : 'Invalid promo coupon code' 
+        message: data.message || (this.language === 'bn' ? 'অবৈধ কুপন কোড' : 'Invalid promo coupon code') 
+      };
+    } catch {
+      return { 
+        success: false, 
+        message: 'Could not connect to coupon verification server' 
       };
     }
-    this.appliedCoupon = coupon;
-    this.notify();
-    return { 
-      success: true, 
-      message: this.language === 'bn' ? coupon.descriptionBn : coupon.descriptionEn 
-    };
   }
 
   public removeCoupon(): void {
@@ -452,31 +618,36 @@ export class ShopStateService {
     return this.siteSettings?.insideDhakaDeliveryFee ?? 60;
   }
 
+  public getCartTotal(district?: string): number {
+    const subtotal = this.getCartSubtotal();
+    const discount = this.getCartDiscount(subtotal);
+    const fee = this.getCartDeliveryFee(subtotal, district);
+    return Math.max(0, subtotal - discount + fee);
+  }
 
-  // Order Placement with server-side price verification and server-side Telegram dispatch
+  // ----------------------------------------------------
+  // Order Placement (Server-Authoritative)
+  // ----------------------------------------------------
   public async placeOrder(orderData: {
     customerName: string;
     phone: string;
-    email: string;
+    email?: string;
     address: string;
     district: string;
     notes?: string;
     paymentMethod: 'cod' | 'bkash' | 'nagad' | 'rocket' | 'card';
+    mfsProvider?: 'bkash' | 'nagad' | 'rocket';
     trxId?: string;
     senderNumber?: string;
-    mfsProvider?: 'bkash' | 'nagad' | 'rocket';
+    couponCode?: string;
   }): Promise<Order> {
+    if (this.cart.length === 0) {
+      throw new Error('Your cart is empty');
+    }
+
     const payload = {
-      customerName: orderData.customerName,
-      phone: orderData.phone,
-      email: orderData.email || `${orderData.phone}@customer.7x-shop.com`,
-      address: orderData.address,
-      district: orderData.district,
-      notes: orderData.notes,
-      paymentMethod: orderData.paymentMethod,
-      trxId: orderData.trxId,
-      senderNumber: orderData.senderNumber,
-      couponCode: this.appliedCoupon?.code,
+      ...orderData,
+      couponCode: this.appliedCoupon?.code || orderData.couponCode,
       items: this.cart.map(item => ({
         productId: item.product.id,
         quantity: item.quantity,
@@ -485,120 +656,64 @@ export class ShopStateService {
       })),
     };
 
-    let verifiedOrder: Order;
-    try {
-      const res = await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      const json = await res.json();
-      if (!res.ok || !json.success) {
-        throw new Error(json.message || 'Failed to place order');
-      }
-
-      verifiedOrder = json.data;
-
-      if (json.notification) {
-        const notifLog: NotificationLog = {
-          id: 'log-' + Date.now(),
-          orderId: verifiedOrder.id,
-          type: 'telegram',
-          status: json.notification.status === 'success' ? 'success' : 'simulated',
-          message: `Order #${verifiedOrder.id} dispatched to admin`,
-          timestamp: new Date().toISOString(),
-          details: json.notification.details || 'Dispatched by server',
-        };
-        this.notificationLogs.unshift(notifLog);
-        setStoredItem(STORAGE_KEYS.NOTIFICATION_LOGS, this.notificationLogs);
-      }
-    } catch (err: any) {
-      throw err;
-    }
-
-    // Deduct stock locally based on verified order items
-    verifiedOrder.items.forEach(item => {
-      const prod = this.products.find(p => p.id === item.productId);
-      if (prod && prod.stock > 0) {
-        prod.stock = Math.max(0, prod.stock - item.quantity);
-      }
+    const res = await fetch('/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
-    setStoredItem(STORAGE_KEYS.PRODUCTS, this.products);
 
-    // Save order
-    this.orders.unshift(verifiedOrder);
-    setStoredItem(STORAGE_KEYS.ORDERS, this.orders);
-
-    // Audio chime for instant admin feedback
-    playOrderNotificationChime();
-
-    // Auto-create or link customer locally
-    const existing = this.users.find(u => u.phone === verifiedOrder.phone || u.email === verifiedOrder.email);
-    if (!existing) {
-      const newUser: User = {
-        id: `usr-${Date.now()}`,
-        name: verifiedOrder.customerName,
-        phone: verifiedOrder.phone,
-        email: verifiedOrder.email,
-        role: 'customer',
-        address: verifiedOrder.address,
-        district: verifiedOrder.district,
-        createdAt: new Date().toISOString(),
-      };
-      this.users.push(newUser);
-      setStoredItem(STORAGE_KEYS.USERS, this.users);
+    const json = await res.json();
+    if (!res.ok || !json.success) {
+      throw new Error(json.message || 'Server rejected order creation');
     }
 
-    // Clear cart
+    const verifiedOrder: Order = json.data;
+
+    // Refresh products catalog from server to reflect stock decrements
+    await this.loadProducts();
+
+    // Clear client cart
     this.clearCart();
+
+    // Sound chime
+    playOrderNotificationChime();
 
     this.showToast(
       '🔔 Order Placed!',
-      `Order #${verifiedOrder.id} confirmed. Total: ৳${verifiedOrder.totalAmount.toLocaleString()}`,
+      `Order #${verifiedOrder.orderNumber || verifiedOrder.id} confirmed. Total: ৳${verifiedOrder.totalAmount.toLocaleString()}`,
       'order'
     );
 
     return verifiedOrder;
   }
 
-  // Admin order status update
-  public async updateOrderStatus(orderId: string, status: Order['orderStatus']): Promise<void> {
-    const order = this.orders.find(o => o.id === orderId);
-    if (order) {
-      order.orderStatus = status;
-      order.updatedAt = new Date().toISOString();
-      setStoredItem(STORAGE_KEYS.ORDERS, this.orders);
-      this.notify();
-      try {
-        await this.apiFetch(`/api/orders/${orderId}/status`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status }),
-        });
-      } catch (err: any) {
-        this.showToast(
-          this.language === 'bn' ? 'স্ট্যাটাস আপডেট ব্যর্থ' : 'Status Update Failed',
-          err?.message || 'Could not update order status on server',
-          'info'
-        );
-        throw err;
-      }
+  // ----------------------------------------------------
+  // Admin Operations (Always refetch from server to maintain real state)
+  // ----------------------------------------------------
+  public async updateOrderStatus(orderId: string, status: OrderStatus): Promise<void> {
+    try {
+      await this.apiFetch(`/api/orders/${orderId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      });
+      // Refetch orders & stats from server
+      await this.loadOrders();
+      await this.loadAdminStats();
+    } catch (err: any) {
+      this.showToast(
+        this.language === 'bn' ? 'স্ট্যাটাস আপডেট ব্যর্থ' : 'Status Update Failed',
+        err?.message || 'Could not update order status on server',
+        'info'
+      );
+      throw err;
     }
   }
 
-  // Product management
   public async saveProduct(product: Product): Promise<void> {
-    const index = this.products.findIndex(p => p.id === product.id);
-    if (index > -1) {
-      this.products[index] = product;
-    } else {
-      this.products.unshift(product);
-    }
-    setStoredItem(STORAGE_KEYS.PRODUCTS, this.products);
-    this.notify();
     try {
-      if (index > -1) {
+      const isExisting = this.products.some(p => p.id === product.id);
+      if (isExisting) {
         await this.apiFetch(`/api/products/${product.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -611,6 +726,9 @@ export class ShopStateService {
           body: JSON.stringify(product),
         });
       }
+      // Refetch products catalog from server
+      await this.loadProducts();
+      await this.loadAdminStats();
     } catch (err: any) {
       this.showToast(
         this.language === 'bn' ? 'পণ্য সংরক্ষণ ব্যর্থ' : 'Product Save Failed',
@@ -622,11 +740,11 @@ export class ShopStateService {
   }
 
   public async deleteProduct(id: string): Promise<void> {
-    this.products = this.products.filter(p => p.id !== id);
-    setStoredItem(STORAGE_KEYS.PRODUCTS, this.products);
-    this.notify();
     try {
       await this.apiFetch(`/api/products/${id}`, { method: 'DELETE' });
+      // Refetch products catalog from server
+      await this.loadProducts();
+      await this.loadAdminStats();
     } catch (err: any) {
       this.showToast(
         this.language === 'bn' ? 'পণ্য মুছে ফেলা ব্যর্থ' : 'Product Delete Failed',
@@ -637,17 +755,14 @@ export class ShopStateService {
     }
   }
 
-  // Telegram Config update
   public async saveTelegramConfig(config: TelegramConfig): Promise<void> {
-    this.telegramConfig = config;
-    setStoredItem(STORAGE_KEYS.TELEGRAM_CONFIG, config);
-    this.notify();
     try {
       await this.apiFetch('/api/telegram/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
       });
+      await this.loadTelegramConfig();
     } catch (err: any) {
       this.showToast(
         this.language === 'bn' ? 'টেলিগ্রাম কনফিগ ব্যর্থ' : 'Telegram Config Failed',
@@ -662,9 +777,7 @@ export class ShopStateService {
     try {
       const res = await this.apiFetch('/api/telegram/test', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(this.telegramConfig),
       });
       return await res.json();
@@ -675,43 +788,49 @@ export class ShopStateService {
     }
   }
 
-  // Auth & User Switch
+  // Customer Account Session
   public loginUser(identifier: string, role: 'customer' | 'admin' = 'customer'): User {
-    let user = this.users.find(u => u.email.toLowerCase() === identifier.toLowerCase() || u.phone === identifier);
-    if (!user) {
-      user = {
-        id: `usr-${Date.now()}`,
-        name: identifier.includes('@') ? identifier.split('@')[0] : `Customer ${identifier.slice(-4)}`,
-        email: identifier.includes('@') ? identifier : `${identifier}@customer.7x-shop.com`,
-        phone: identifier.includes('@') ? '01712345678' : identifier,
-        role: role,
-        district: 'Dhaka',
-        createdAt: new Date().toISOString(),
-      };
-      this.users.push(user);
-      setStoredItem(STORAGE_KEYS.USERS, this.users);
-    }
+    const user: User = {
+      id: `usr-${Date.now()}`,
+      name: identifier.includes('@') ? identifier.split('@')[0] : `Customer ${identifier.slice(-4)}`,
+      email: identifier.includes('@') ? identifier : `${identifier}@customer.7x-shop.com`,
+      phone: identifier.includes('@') ? '01712345678' : identifier,
+      role: role,
+      district: 'Dhaka',
+      createdAt: new Date().toISOString(),
+    };
     this.currentUser = user;
-    setStoredItem(STORAGE_KEYS.CURRENT_USER, user);
     this.notify();
     return user;
   }
 
   public logoutUser(): void {
     this.currentUser = null;
-    setStoredItem(STORAGE_KEYS.CURRENT_USER, null);
     this.notify();
   }
 
   public switchDemoAccount(role: 'admin' | 'customer'): void {
     if (role === 'admin') {
-      const admin = this.users.find(u => u.role === 'admin') || initialUsers[0];
-      this.currentUser = admin;
+      this.currentUser = {
+        id: 'usr-admin-1',
+        name: 'Admin Saif',
+        email: 'saif01811534513solima@gmail.com',
+        phone: '01811534513',
+        role: 'admin',
+        district: 'Dhaka',
+        createdAt: '2026-01-15T08:00:00Z',
+      };
     } else {
-      const cust = this.users.find(u => u.role === 'customer') || initialUsers[1];
-      this.currentUser = cust;
+      this.currentUser = {
+        id: 'usr-cust-1',
+        name: 'Tanvir Hossain',
+        email: 'tanvir.dev@gmail.com',
+        phone: '01712345678',
+        role: 'customer',
+        district: 'Dhaka',
+        createdAt: '2026-02-10T11:20:00Z',
+      };
     }
-    setStoredItem(STORAGE_KEYS.CURRENT_USER, this.currentUser);
     this.notify();
   }
 
@@ -732,6 +851,7 @@ export class ShopStateService {
           sessionStorage.setItem('7x_shop_admin_token', data.token);
         }
         this.switchDemoAccount('admin');
+        await this.loadAdminData();
         this.notify();
         return true;
       }
@@ -754,7 +874,6 @@ export class ShopStateService {
     this.notify();
   }
 
-  // Admin change password (Server-side enforced, min 12 characters)
   public async changeAdminPassword(currentPassword: string, newPassword: string): Promise<{ success: boolean; message: string }> {
     try {
       const res = await this.apiFetch('/api/admin/change-password', {
@@ -787,54 +906,39 @@ export class ShopStateService {
   }
 
   // Product Reviews
-  public addReview(productId: string, rating: number, comment: string, customerName: string): ProductReview {
-    const rev: ProductReview = {
-      id: `rev-${Date.now()}`,
-      productId,
-      customerName,
-      rating,
-      comment,
-      date: new Date().toISOString().split('T')[0],
-      verifiedPurchase: true,
-    };
-    this.reviews.unshift(rev);
-    setStoredItem(STORAGE_KEYS.REVIEWS, this.reviews);
-
-    // Update product rating
-    const prod = this.products.find(p => p.id === productId);
-    if (prod) {
-      const prodRevs = this.reviews.filter(r => r.productId === productId);
-      const avg = prodRevs.reduce((acc, r) => acc + r.rating, 0) / prodRevs.length;
-      prod.rating = Number(avg.toFixed(1));
-      prod.reviewCount = prodRevs.length;
-      setStoredItem(STORAGE_KEYS.PRODUCTS, this.products);
+  public async addReview(productId: string, rating: number, comment: string, customerName: string): Promise<ProductReview | null> {
+    try {
+      const res = await fetch('/api/reviews', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId, rating, comment, customerName }),
+      });
+      const json = await res.json();
+      if (json.success && json.data) {
+        this.reviews.unshift(json.data);
+        await this.loadProducts();
+        this.notify();
+        return json.data;
+      }
+    } catch (err) {
+      console.warn('Failed to submit review to server:', err);
     }
-
-    this.notify();
-    return rev;
+    return null;
   }
 
-  // Site Settings & Content Customization (Banners, Helpline, Hotline, Top Bar, Fees, Footer)
+  // Site Settings & Content Customization
   public async updateSiteSettings(updates: Partial<SiteSettings>): Promise<boolean> {
-    this.siteSettings = {
-      ...this.siteSettings,
-      ...updates,
-      trustBadges: {
-        ...this.siteSettings.trustBadges,
-        ...(updates.trustBadges || {}),
-      },
-    };
-    setStoredItem(STORAGE_KEYS.SITE_SETTINGS, this.siteSettings);
-    this.notify();
-
     try {
-      await this.apiFetch('/api/site-settings', {
+      const res = await this.apiFetch('/api/site-settings', {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(this.siteSettings),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
       });
+      const json = await res.json();
+      if (json.success && json.data) {
+        this.siteSettings = json.data;
+        this.notify();
+      }
     } catch (err: any) {
       this.showToast(
         this.language === 'bn' ? 'সেটিংস আপডেট ব্যর্থ' : 'Settings Save Failed',
@@ -910,17 +1014,16 @@ export class ShopStateService {
   }
 
   public async resetSiteSettings(): Promise<boolean> {
-    this.siteSettings = JSON.parse(JSON.stringify(DEFAULT_SITE_SETTINGS));
-    setStoredItem(STORAGE_KEYS.SITE_SETTINGS, this.siteSettings);
-    this.notify();
-
     try {
-      await this.apiFetch('/api/site-settings/reset', {
+      const res = await this.apiFetch('/api/site-settings/reset', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
       });
+      const json = await res.json();
+      if (json.success && json.data) {
+        this.siteSettings = json.data;
+        this.notify();
+      }
     } catch (err: any) {
       this.showToast(
         this.language === 'bn' ? 'রিসেট ব্যর্থ' : 'Reset Failed',
@@ -938,7 +1041,6 @@ export class ShopStateService {
     return true;
   }
 }
-
 
 // React Hook
 export function useShopStore() {

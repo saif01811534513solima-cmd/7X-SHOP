@@ -38,11 +38,11 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   const freeThreshold = 2000;
   const remainingForFree = Math.max(0, freeThreshold - subtotal);
 
-  const handleApplyCoupon = (e: React.FormEvent) => {
+  const handleApplyCoupon = async (e: React.FormEvent) => {
     e.preventDefault();
     setCouponError('');
     if (!couponInput.trim()) return;
-    const res = store.applyCoupon(couponInput);
+    const res = await store.applyCoupon(couponInput);
     if (!res.success) {
       setCouponError(res.message);
     } else {
