@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
-dotenv.config({ override: true });
+dotenv.config();
 import express, { Request, Response } from 'express';
+import helmet from 'helmet';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { router as apiRouter } from './src/server/apiHandler';
@@ -11,6 +12,16 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+
+app.set('trust proxy', 1);
+
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    frameguard: false,
+  })
+);
 
 app.use(express.json());
 

@@ -102,21 +102,14 @@ export function requireAdminAuth(req: Request, res: Response, next: () => void) 
   const token = (req.headers['x-admin-token'] as string) || 
     (req.headers['authorization']?.startsWith('Bearer ') ? req.headers['authorization'].slice(7) : null);
 
-  if (!token) {
+  if (!token || !isValidAdminToken(token)) {
     return res.status(401).json({
       success: false,
-      message: 'Unauthorized: Admin authentication token required to access this resource.',
+      message: 'Unauthorized: Admin authentication token required or expired.',
     });
   }
 
-  if (isValidAdminToken(token)) {
-    return next();
-  }
-
-  return res.status(403).json({
-    success: false,
-    message: 'Forbidden: Invalid or expired admin credentials.',
-  });
+  return next();
 }
 
 // Admin Auth Endpoints
@@ -182,8 +175,8 @@ router.post('/admin/change-password', requireAdminAuth, (req: Request, res: Resp
     return res.status(400).json({ success: false, message: 'Current password does not match' });
   }
 
-  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
-    return res.status(400).json({ success: false, message: 'New password must be at least 8 characters' });
+  if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 12) {
+    return res.status(400).json({ success: false, message: 'New password must be at least 12 characters' });
   }
 
   if (newPassword === 'admin123' || newPassword.toLowerCase() === 'password') {
@@ -307,40 +300,85 @@ router.get('/coupons/validate/:code', (req: Request, res: Response) => {
   res.json({ success: true, data: coupon });
 });
 
-// 4. Orders API (With Telegram Notification Dispatch & Server-side Price Verification!)
-router.get('/orders', (req: Request, res: Response) => {
-  const { customerEmail, phone, status } = req.query;
-
-  // If fetching all orders without customer filter, require admin authentication
-  if (!customerEmail && !phone) {
-    const token = (req.headers['x-admin-token'] as string) || 
-      (req.headers['authorization']?.startsWith('Bearer ') ? req.headers['authorization'].slice(7) : null);
-    if (!isValidAdminToken(token)) {
-      return res.status(401).json({
-        success: false,
-        message: 'Unauthorized: Admin authentication required to list all customer orders.',
-      });
-    }
-  }
+// 4. Orders API
+// 4a. Admin Orders List (Requires valid admin token. No customer parameter bypass)
+router.get('/orders', requireAdminAuth, (req: Request, res: Response) => {
+  const { status, search } = req.query;
 
   let filtered = [...orders];
 
-  if (customerEmail && typeof customerEmail === 'string') {
-    filtered = filtered.filter(o => o.email.toLowerCase() === customerEmail.toLowerCase());
-  }
-
-  if (phone && typeof phone === 'string') {
-    filtered = filtered.filter(o => o.phone.includes(phone));
-  }
-
   if (status && typeof status === 'string' && status !== 'all') {
     filtered = filtered.filter(o => o.orderStatus === status);
+  }
+
+  if (search && typeof search === 'string') {
+    const q = search.toLowerCase().trim();
+    filtered = filtered.filter(o =>
+      o.orderNumber.toLowerCase().includes(q) ||
+      o.customerName.toLowerCase().includes(q) ||
+      o.phone.includes(q)
+    );
   }
 
   // Sort newest first
   filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   res.json({ success: true, count: filtered.length, data: filtered });
+});
+
+// 4b. Customer Order Tracking (Requires BOTH orderNumber and phone to match exactly; returns minimal fields only)
+router.get('/orders/track', (req: Request, res: Response) => {
+  const { orderNumber, phone } = req.query;
+
+  if (!orderNumber || !phone || typeof orderNumber !== 'string' || typeof phone !== 'string') {
+    return res.status(400).json({
+      success: false,
+      message: 'Both orderNumber and phone are required for order tracking.',
+    });
+  }
+
+  const queryOrderNum = orderNumber.trim().toUpperCase().replace(/^#/, '');
+  const cleanQueryPhone = phone.trim().replace(/[\s-]/g, '');
+
+  if (!queryOrderNum || !cleanQueryPhone) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid order number or phone parameter.',
+    });
+  }
+
+  // EXACT match on orderNumber and EXACT match on phone (not includes)
+  const matched = orders.find(o => {
+    const oNum = (o.orderNumber || o.id).toUpperCase().replace(/^#/, '');
+    const oPhone = o.phone.trim().replace(/[\s-]/g, '');
+    return oNum === queryOrderNum && oPhone === cleanQueryPhone;
+  });
+
+  if (!matched) {
+    return res.status(404).json({
+      success: false,
+      message: 'Order not found. Please verify both your order number and phone number.',
+    });
+  }
+
+  // Return minimal fields only (orderNumber, status, items, total)
+  return res.json({
+    success: true,
+    data: {
+      orderNumber: matched.orderNumber || matched.id,
+      status: matched.orderStatus,
+      items: matched.items.map(it => ({
+        productName: it.productName,
+        productImage: it.productImage,
+        price: it.price,
+        quantity: it.quantity,
+        selectedColor: it.selectedColor,
+        selectedSize: it.selectedSize,
+      })),
+      total: matched.totalAmount,
+      createdAt: matched.createdAt,
+    },
+  });
 });
 
 router.post('/orders', orderRateLimiter, async (req: Request, res: Response) => {

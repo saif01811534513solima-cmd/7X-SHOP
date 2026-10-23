@@ -12,7 +12,8 @@ import {
   LogOut, 
   Key,
   ShieldAlert,
-  ChevronRight
+  ChevronRight,
+  Search
 } from 'lucide-react';
 import { useShopStore } from '../services/store';
 import { OrderStatus } from '../types';
@@ -30,8 +31,28 @@ export const CustomerAccountModal: React.FC<CustomerAccountModalProps> = ({
   const store = useShopStore();
   const t = store.t();
 
-  const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot'>('login');
-  const [activeTab, setActiveTab] = useState<'orders' | 'profile'>('orders');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot' | 'track'>('login');
+  const [activeTab, setActiveTab] = useState<'orders' | 'track' | 'profile'>('orders');
+
+  // Tracking state
+  const [trackOrderNumber, setTrackOrderNumber] = useState('');
+  const [trackPhone, setTrackPhone] = useState('');
+  const [isTracking, setIsTracking] = useState(false);
+  const [trackResult, setTrackResult] = useState<{
+    orderNumber: string;
+    status: OrderStatus;
+    items: Array<{
+      productName: string;
+      productImage?: string;
+      price: number;
+      quantity: number;
+      selectedColor?: string;
+      selectedSize?: string;
+    }>;
+    total: number;
+    createdAt: string;
+  } | null>(null);
+  const [trackError, setTrackError] = useState('');
 
   // Login / Register state
   const [identifier, setIdentifier] = useState('');
@@ -47,6 +68,40 @@ export const CustomerAccountModal: React.FC<CustomerAccountModalProps> = ({
   const userOrders = user 
     ? store.orders.filter(o => o.phone === user.phone || (user.email && o.email === user.email))
     : [];
+
+  const handleTrackOrder = async (e?: React.FormEvent, customOrderNum?: string, customPhone?: string) => {
+    if (e) e.preventDefault();
+    const queryNum = (customOrderNum || trackOrderNumber).trim();
+    const queryPhone = (customPhone || trackPhone).trim();
+
+    if (!queryNum || !queryPhone) {
+      setTrackError(
+        store.language === 'bn' 
+          ? 'অনুগ্রহ করে অর্ডার নম্বর ও ফোন নম্বর উভয়টি দিন।' 
+          : 'Please enter both Order Number and Phone Number.'
+      );
+      return;
+    }
+
+    setIsTracking(true);
+    setTrackError('');
+    setTrackResult(null);
+
+    const res = await store.trackOrder(queryNum, queryPhone);
+    setIsTracking(false);
+
+    if (res.success && res.data) {
+      setTrackResult(res.data);
+    } else {
+      setTrackError(
+        res.message || (
+          store.language === 'bn'
+            ? 'অর্ডার পাওয়া যায়নি। অর্ডার নম্বর ও ফোন নম্বর সঠিক কি না পরীক্ষা করুন।'
+            : 'Order not found. Please verify both your order number and phone number.'
+        )
+      );
+    }
+  };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,6 +131,132 @@ export const CustomerAccountModal: React.FC<CustomerAccountModalProps> = ({
     }
   };
 
+  const renderTrackingView = () => (
+    <div className="space-y-4">
+      <form onSubmit={handleTrackOrder} className="space-y-3">
+        <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/80 space-y-3">
+          <div className="flex items-center gap-2 text-slate-800 text-xs font-bold">
+            <Truck className="w-4 h-4 text-amber-500" />
+            <span>{store.language === 'bn' ? 'লাইভ অর্ডার ট্র্যাকিং (Order Tracking)' : 'Live Order Tracking'}</span>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            {store.language === 'bn' 
+              ? 'আপনার অর্ডার নম্বর ও চেকআউটে ব্যবহৃত ফোন নম্বর দিয়ে অর্ডারের বর্তমান অবস্থা দেখুন।' 
+              : 'Enter your exact order number and phone number to verify live delivery status.'}
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                {store.language === 'bn' ? 'অর্ডার নম্বর *' : 'Order Number *'}
+              </label>
+              <input
+                type="text"
+                required
+                value={trackOrderNumber}
+                onChange={e => {
+                  setTrackOrderNumber(e.target.value);
+                  if (trackError) setTrackError('');
+                }}
+                placeholder="e.g. 1001 or 7X-1001"
+                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs outline-none focus:border-amber-500 font-mono uppercase"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                {store.language === 'bn' ? 'ফোন নম্বর *' : 'Phone Number *'}
+              </label>
+              <input
+                type="tel"
+                required
+                value={trackPhone}
+                onChange={e => {
+                  setTrackPhone(e.target.value);
+                  if (trackError) setTrackError('');
+                }}
+                placeholder="01XXXXXXXXX"
+                className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs outline-none focus:border-amber-500 font-mono"
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={isTracking || !trackOrderNumber || !trackPhone}
+            className="w-full py-2.5 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-lg transition flex items-center justify-center gap-2 cursor-pointer shadow-xs"
+          >
+            <Search className="w-3.5 h-3.5" />
+            <span>
+              {isTracking 
+                ? (store.language === 'bn' ? 'যাচাই হচ্ছে...' : 'Tracking...') 
+                : (store.language === 'bn' ? 'অর্ডার ট্র্যাক করুন' : 'Track Order Status')}
+            </span>
+          </button>
+        </div>
+      </form>
+
+      {trackError && (
+        <div className="p-3 bg-red-50 text-red-700 text-xs rounded-xl border border-red-200 animate-in fade-in duration-200">
+          ⚠️ {trackError}
+        </div>
+      )}
+
+      {trackResult && (
+        <div className="border border-slate-200 rounded-xl p-4 space-y-3 bg-white shadow-2xs animate-in fade-in duration-200">
+          <div className="flex items-center justify-between pb-2 border-b border-slate-100 text-xs">
+            <div>
+              <span className="font-mono font-bold text-slate-900">#{trackResult.orderNumber}</span>
+              <span className="text-slate-400 ml-2">
+                {new Date(trackResult.createdAt).toLocaleDateString()}
+              </span>
+            </div>
+            <div className="font-bold text-amber-600 font-mono text-sm">
+              {store.formatPrice(trackResult.total)}
+            </div>
+          </div>
+
+          <div className="py-2">
+            <div className="flex items-center justify-between text-[10px] font-semibold text-slate-500 mb-1.5">
+              <span className={getStatusStepIndex(trackResult.status) >= 1 ? 'text-amber-600 font-bold' : ''}>1. Placed</span>
+              <span className={getStatusStepIndex(trackResult.status) >= 2 ? 'text-blue-600 font-bold' : ''}>2. Processing</span>
+              <span className={getStatusStepIndex(trackResult.status) >= 3 ? 'text-purple-600 font-bold' : ''}>3. Shipped</span>
+              <span className={getStatusStepIndex(trackResult.status) >= 4 ? 'text-emerald-600 font-bold' : ''}>4. Delivered</span>
+            </div>
+            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden flex">
+              <div
+                className="h-full bg-amber-500 transition-all duration-300"
+                style={{ width: `${(getStatusStepIndex(trackResult.status) / 4) * 100}%` }}
+              />
+            </div>
+            <div className="mt-2 text-right">
+              <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
+                Status: {trackResult.status}
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-2 text-xs text-slate-700 border-t border-slate-100 pt-2">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
+              Items ({trackResult.items.length})
+            </span>
+            {trackResult.items.map((it, idx) => (
+              <div key={idx} className="flex justify-between items-center text-[11px] gap-2">
+                <div className="flex items-center gap-2 truncate">
+                  {it.productImage ? (
+                    <img src={it.productImage} alt="" className="w-7 h-7 rounded object-cover border border-slate-200 shrink-0" />
+                  ) : null}
+                  <span className="truncate">• {it.productName} (x{it.quantity})</span>
+                </div>
+                <span className="font-bold shrink-0">{store.formatPrice(it.price * it.quantity)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-950/75 backdrop-blur-2xs flex items-center justify-center p-3 sm:p-6">
       <div className="relative bg-white rounded-2xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
@@ -104,7 +285,43 @@ export const CustomerAccountModal: React.FC<CustomerAccountModalProps> = ({
         <div className="p-6 max-h-[80vh] overflow-y-auto">
           {!user ? (
             /* Logged Out / Auth Screens */
-            <div className="max-w-md mx-auto py-4">
+            <div className="max-w-md mx-auto py-2">
+              {/* Logged Out Tabs */}
+              <div className="flex border-b border-slate-200 text-xs font-bold gap-4 mb-6">
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('login')}
+                  className={`pb-2.5 transition border-b-2 flex items-center gap-1.5 cursor-pointer ${
+                    authMode === 'login' ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <User className="w-3.5 h-3.5" />
+                  <span>{t.login}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('track')}
+                  className={`pb-2.5 transition border-b-2 flex items-center gap-1.5 cursor-pointer ${
+                    authMode === 'track' ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Truck className="w-3.5 h-3.5" />
+                  <span>{store.language === 'bn' ? 'অর্ডার ট্র্যাকিং' : 'Track Order'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('register')}
+                  className={`pb-2.5 transition border-b-2 flex items-center gap-1.5 cursor-pointer ${
+                    authMode === 'register' ? 'border-amber-500 text-amber-600' : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  <span>{t.signUp}</span>
+                </button>
+              </div>
+
+              {authMode === 'track' && renderTrackingView()}
+
               {authMode === 'login' && (
                 <form onSubmit={handleLogin} className="space-y-4">
                   <div className="text-center mb-6">
@@ -303,6 +520,18 @@ export const CustomerAccountModal: React.FC<CustomerAccountModalProps> = ({
                 </button>
 
                 <button
+                  onClick={() => setActiveTab('track')}
+                  className={`pb-2.5 transition border-b-2 flex items-center gap-1.5 ${
+                    activeTab === 'track'
+                      ? 'border-amber-500 text-amber-600'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Truck className="w-4 h-4" />
+                  <span>{store.language === 'bn' ? 'অর্ডার ট্র্যাকিং' : 'Track Order'}</span>
+                </button>
+
+                <button
                   onClick={() => setActiveTab('profile')}
                   className={`pb-2.5 transition border-b-2 flex items-center gap-1.5 ${
                     activeTab === 'profile'
@@ -314,6 +543,9 @@ export const CustomerAccountModal: React.FC<CustomerAccountModalProps> = ({
                   <span>{t.profile}</span>
                 </button>
               </div>
+
+              {/* Tracking Tab in Logged in View */}
+              {activeTab === 'track' && renderTrackingView()}
 
               {/* Orders History List */}
               {activeTab === 'orders' && (
@@ -334,8 +566,23 @@ export const CustomerAccountModal: React.FC<CustomerAccountModalProps> = ({
                                 {new Date(order.createdAt).toLocaleDateString()}
                               </span>
                             </div>
-                            <div className="font-bold text-amber-600 font-mono">
-                              {store.formatPrice(order.totalAmount)}
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTrackOrderNumber(order.orderNumber || order.id);
+                                  setTrackPhone(order.phone);
+                                  setActiveTab('track');
+                                  handleTrackOrder(undefined, order.orderNumber || order.id, order.phone);
+                                }}
+                                className="text-amber-600 hover:text-amber-700 font-bold hover:underline cursor-pointer flex items-center gap-1 text-[11px]"
+                              >
+                                <Truck className="w-3 h-3" />
+                                <span>Live Track</span>
+                              </button>
+                              <span className="font-bold text-amber-600 font-mono">
+                                {store.formatPrice(order.totalAmount)}
+                              </span>
                             </div>
                           </div>
 

@@ -91,7 +91,6 @@ const STORAGE_KEYS = {
   NOTIFICATION_LOGS: '7x_shop_tg_logs_v1',
   REVIEWS: '7x_shop_reviews_v1',
   PAYMENT_SETTINGS: '7x_shop_payment_settings_v1',
-  ADMIN_PASSWORD: '7x_shop_admin_password_v1',
   ADMIN_PASSWORD_CHANGED: '7x_shop_admin_password_changed_v1',
   SITE_SETTINGS: '7x_shop_site_settings_v1',
 };
@@ -169,7 +168,6 @@ export class ShopStateService {
   public siteSettings: SiteSettings;
   public appliedCoupon: Coupon | null = null;
   public liveToast: { title: string; message: string; type: 'success' | 'info' | 'order' } | null = null;
-  public adminPassword: string;
   public adminPasswordChangedAt: string;
   public adminUnlocked: boolean = false;
   public adminToken: string | null = null;
@@ -206,10 +204,88 @@ export class ShopStateService {
       },
     };
 
-    this.adminPassword = getStoredItem<string>(STORAGE_KEYS.ADMIN_PASSWORD, '');
+    // Remove legacy adminPassword from localStorage entirely
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('7x_shop_admin_password_v1');
+    }
     this.adminPasswordChangedAt = getStoredItem<string>(STORAGE_KEYS.ADMIN_PASSWORD_CHANGED, '2026-01-01T00:00:00.000Z');
     this.adminUnlocked = typeof window !== 'undefined' ? sessionStorage.getItem('7x_shop_admin_unlocked') === 'true' : false;
     this.adminToken = typeof window !== 'undefined' ? sessionStorage.getItem('7x_shop_admin_token') : null;
+  }
+
+  // Centralized authenticated API Fetch helper
+  // Automatically attaches x-admin-token when admin is logged in, logs out on 401, and throws errors.
+  public async apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
+    const headers = new Headers(options.headers || {});
+    if (this.adminToken) {
+      headers.set('x-admin-token', this.adminToken);
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(url, { ...options, headers });
+    } catch (networkErr: any) {
+      const errorMsg = networkErr?.message || 'Network connection failed';
+      this.showToast('Network Error', errorMsg, 'info');
+      throw networkErr;
+    }
+
+    if (res.status === 401) {
+      if (this.adminUnlocked || this.adminToken) {
+        this.lockAdmin();
+        this.showToast(
+          this.language === 'bn' ? 'সেশন সমাপ্ত' : 'Session Expired',
+          this.language === 'bn' ? 'আপনার এডমিন সেশন শেষ হয়ে গেছে। অনুগ্রহ করে আবার লগইন করুন।' : 'Your admin session has expired. Please log in again.',
+          'info'
+        );
+      }
+      const errData = await res.clone().json().catch(() => ({}));
+      const error = new Error(errData.message || 'Unauthorized: Admin authentication required');
+      throw error;
+    }
+
+    if (!res.ok) {
+      const errData = await res.clone().json().catch(() => ({}));
+      const error = new Error(errData.message || `Request failed with status ${res.status}`);
+      throw error;
+    }
+
+    return res;
+  }
+
+  // Customer order tracking by orderNumber and exact phone
+  public async trackOrder(orderNumber: string, phone: string): Promise<{
+    success: boolean;
+    data?: {
+      orderNumber: string;
+      status: Order['orderStatus'];
+      items: Array<{
+        productName: string;
+        productImage?: string;
+        price: number;
+        quantity: number;
+        selectedColor?: string;
+        selectedSize?: string;
+      }>;
+      total: number;
+      createdAt: string;
+    };
+    message?: string;
+  }> {
+    try {
+      const params = new URLSearchParams({
+        orderNumber: orderNumber.trim(),
+        phone: phone.trim(),
+      });
+      const res = await fetch(`/api/orders/track?${params.toString()}`);
+      const data = await res.json();
+      return data;
+    } catch (err: any) {
+      return {
+        success: false,
+        message: err?.message || 'Failed to connect to tracking service',
+      };
+    }
   }
 
 
@@ -487,7 +563,7 @@ export class ShopStateService {
   }
 
   // Admin order status update
-  public updateOrderStatus(orderId: string, status: Order['orderStatus']): void {
+  public async updateOrderStatus(orderId: string, status: Order['orderStatus']): Promise<void> {
     const order = this.orders.find(o => o.id === orderId);
     if (order) {
       order.orderStatus = status;
@@ -495,17 +571,24 @@ export class ShopStateService {
       setStoredItem(STORAGE_KEYS.ORDERS, this.orders);
       this.notify();
       try {
-        fetch(`/api/orders/${orderId}/status`, {
+        await this.apiFetch(`/api/orders/${orderId}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status }),
-        }).catch(() => {});
-      } catch {}
+        });
+      } catch (err: any) {
+        this.showToast(
+          this.language === 'bn' ? 'স্ট্যাটাস আপডেট ব্যর্থ' : 'Status Update Failed',
+          err?.message || 'Could not update order status on server',
+          'info'
+        );
+        throw err;
+      }
     }
   }
 
   // Product management
-  public saveProduct(product: Product): void {
+  public async saveProduct(product: Product): Promise<void> {
     const index = this.products.findIndex(p => p.id === product.id);
     if (index > -1) {
       this.products[index] = product;
@@ -516,57 +599,79 @@ export class ShopStateService {
     this.notify();
     try {
       if (index > -1) {
-        fetch(`/api/products/${product.id}`, {
+        await this.apiFetch(`/api/products/${product.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(product),
-        }).catch(() => {});
+        });
       } else {
-        fetch('/api/products', {
+        await this.apiFetch('/api/products', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(product),
-        }).catch(() => {});
+        });
       }
-    } catch {}
+    } catch (err: any) {
+      this.showToast(
+        this.language === 'bn' ? 'পণ্য সংরক্ষণ ব্যর্থ' : 'Product Save Failed',
+        err?.message || 'Could not save product to server',
+        'info'
+      );
+      throw err;
+    }
   }
 
-  public deleteProduct(id: string): void {
+  public async deleteProduct(id: string): Promise<void> {
     this.products = this.products.filter(p => p.id !== id);
     setStoredItem(STORAGE_KEYS.PRODUCTS, this.products);
     this.notify();
     try {
-      fetch(`/api/products/${id}`, { method: 'DELETE' }).catch(() => {});
-    } catch {}
+      await this.apiFetch(`/api/products/${id}`, { method: 'DELETE' });
+    } catch (err: any) {
+      this.showToast(
+        this.language === 'bn' ? 'পণ্য মুছে ফেলা ব্যর্থ' : 'Product Delete Failed',
+        err?.message || 'Could not delete product from server',
+        'info'
+      );
+      throw err;
+    }
   }
 
   // Telegram Config update
-  public saveTelegramConfig(config: TelegramConfig): void {
+  public async saveTelegramConfig(config: TelegramConfig): Promise<void> {
     this.telegramConfig = config;
     setStoredItem(STORAGE_KEYS.TELEGRAM_CONFIG, config);
     this.notify();
     try {
-      fetch('/api/telegram/config', {
+      await this.apiFetch('/api/telegram/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
-      }).catch(() => {});
-    } catch {}
+      });
+    } catch (err: any) {
+      this.showToast(
+        this.language === 'bn' ? 'টেলিগ্রাম কনফিগ ব্যর্থ' : 'Telegram Config Failed',
+        err?.message || 'Could not save Telegram credentials to server',
+        'info'
+      );
+      throw err;
+    }
   }
 
   public async testTelegram(): Promise<{ success: boolean; message: string }> {
     try {
-      const res = await fetch('/api/telegram/test', {
+      const res = await this.apiFetch('/api/telegram/test', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-token': this.adminToken || '',
         },
         body: JSON.stringify(this.telegramConfig),
       });
       return await res.json();
     } catch (err: any) {
-      return { success: false, message: err?.message || 'Failed to reach server' };
+      const msg = err?.message || 'Failed to reach server';
+      this.showToast('Telegram Test Error', msg, 'info');
+      return { success: false, message: msg };
     }
   }
 
@@ -649,34 +754,36 @@ export class ShopStateService {
     this.notify();
   }
 
-  public updateAdminPassword(currentPass: string, newPass: string): { success: boolean; message: string } {
-    if (currentPass !== this.adminPassword) {
-      return {
-        success: false,
-        message: this.language === 'bn' ? 'বর্তমান পাসওয়ার্ডটি সঠিক নয়।' : 'Current password does not match.',
-      };
+  // Admin change password (Server-side enforced, min 12 characters)
+  public async changeAdminPassword(currentPassword: string, newPassword: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const res = await this.apiFetch('/api/admin/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        this.adminPasswordChangedAt = new Date().toISOString();
+        setStoredItem(STORAGE_KEYS.ADMIN_PASSWORD_CHANGED, this.adminPasswordChangedAt);
+        this.showToast(
+          this.language === 'bn' ? 'পাসওয়ার্ড সফলভাবে পরিবর্তিত হয়েছে' : 'Password Changed',
+          data.message || (this.language === 'bn' ? 'নতুন পাসওয়ার্ড দিয়ে পরবর্তী লগইন সুরক্ষিত থাকবে।' : 'New admin password has been saved.'),
+          'success'
+        );
+        this.notify();
+        return { success: true, message: data.message };
+      }
+      return { success: false, message: data.message || 'Failed to update password' };
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to update admin password';
+      this.showToast(
+        this.language === 'bn' ? 'পাসওয়ার্ড পরিবর্তন ব্যর্থ' : 'Password Change Failed',
+        msg,
+        'info'
+      );
+      return { success: false, message: msg };
     }
-    if (!newPass || newPass.trim().length < 4) {
-      return {
-        success: false,
-        message: this.language === 'bn' ? 'নতুন পাসওয়ার্ড অন্তত ৪ অক্ষরের হতে হবে।' : 'New password must be at least 4 characters long.',
-      };
-    }
-
-    this.adminPassword = newPass.trim();
-    this.adminPasswordChangedAt = new Date().toISOString();
-    setStoredItem(STORAGE_KEYS.ADMIN_PASSWORD, this.adminPassword);
-    setStoredItem(STORAGE_KEYS.ADMIN_PASSWORD_CHANGED, this.adminPasswordChangedAt);
-    this.showToast(
-      this.language === 'bn' ? 'পাসওয়ার্ড সফলভাবে পরিবর্তিত হয়েছে' : 'Password Changed',
-      this.language === 'bn' ? 'নতুন পাসওয়ার্ড দিয়ে পরবর্তী লগইন সুরক্ষিত থাকবে।' : 'New admin password has been saved.',
-      'success'
-    );
-    this.notify();
-    return {
-      success: true,
-      message: this.language === 'bn' ? 'এডমিন পাসওয়ার্ড সফলভাবে পরিবর্তিত হয়েছে!' : 'Admin password successfully updated!',
-    };
   }
 
   // Product Reviews
@@ -720,19 +827,21 @@ export class ShopStateService {
     setStoredItem(STORAGE_KEYS.SITE_SETTINGS, this.siteSettings);
     this.notify();
 
-    // Sync to backend if admin token available
     try {
-      const token = this.adminToken || this.adminPassword;
-      await fetch('/api/site-settings', {
+      await this.apiFetch('/api/site-settings', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-token': token,
         },
         body: JSON.stringify(this.siteSettings),
       });
-    } catch (e) {
-      // Offline or preview fallback
+    } catch (err: any) {
+      this.showToast(
+        this.language === 'bn' ? 'সেটিংস আপডেট ব্যর্থ' : 'Settings Save Failed',
+        err?.message || 'Could not sync settings with server',
+        'info'
+      );
+      throw err;
     }
 
     this.showToast(
@@ -806,15 +915,20 @@ export class ShopStateService {
     this.notify();
 
     try {
-      const token = this.adminToken || this.adminPassword;
-      await fetch('/api/site-settings/reset', {
+      await this.apiFetch('/api/site-settings/reset', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-token': token,
         },
       });
-    } catch (e) {}
+    } catch (err: any) {
+      this.showToast(
+        this.language === 'bn' ? 'রিসেট ব্যর্থ' : 'Reset Failed',
+        err?.message || 'Could not reset site settings on server',
+        'info'
+      );
+      throw err;
+    }
 
     this.showToast(
       this.language === 'bn' ? 'ডিফল্ট সেটিংস সফল' : 'Reset Complete',

@@ -350,7 +350,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
   );
 
   // Security Handlers
-  const handleChangePassword = (e: React.FormEvent) => {
+  const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setPasswordError('');
     setPasswordSuccess('');
@@ -360,8 +360,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
       return;
     }
 
-    if (newPasswordInput.length < 4) {
-      setPasswordError(store.language === 'bn' ? 'নতুন পাসওয়ার্ড অন্তত ৪ অক্ষরের হতে হবে।' : 'New password must be at least 4 characters long.');
+    if (newPasswordInput.length < 12) {
+      setPasswordError(store.language === 'bn' ? 'নতুন পাসওয়ার্ড অন্তত ১২ অক্ষরের হতে হবে।' : 'New password must be at least 12 characters long.');
       return;
     }
 
@@ -371,7 +371,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
     }
 
     setIsChangingPass(true);
-    const result = store.updateAdminPassword(currentPasswordInput, newPasswordInput);
+    const result = await store.changeAdminPassword(currentPasswordInput, newPasswordInput);
     setIsChangingPass(false);
 
     if (result.success) {
@@ -1901,7 +1901,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBackToStore })
                   <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center justify-between">
                       <span>{store.language === 'bn' ? 'নতুন পাসওয়ার্ড (New Password) *' : 'New Password *'}</span>
-                      <span className="text-[10px] text-slate-400">Min 4 chars</span>
+                      <span className="text-[10px] text-slate-400">Min 12 chars</span>
                     </label>
                     <div className="relative">
                       <input
